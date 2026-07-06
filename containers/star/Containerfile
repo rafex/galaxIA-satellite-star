@@ -1,0 +1,43 @@
+# Contenedor del LLM Provider FHS
+# Recubre llama.cpp con el protocolo FHS WebSocket.
+# Expone chat FHS en puerto 43111.
+
+FROM docker.io/library/node:20-alpine AS builder
+WORKDIR /app
+
+COPY package*.json ./
+COPY packages/fhs-protocol/package.json ./packages/fhs-protocol/
+COPY examples/star-example/package.json ./examples/star-example/
+
+RUN npm ci
+
+COPY packages/fhs-protocol ./packages/fhs-protocol
+COPY examples/star-example ./examples/star-example
+
+RUN npm run build -w packages/fhs-protocol && \
+    npm run build -w examples/star-example
+
+FROM docker.io/library/node:20-alpine
+WORKDIR /app
+ENV NODE_ENV=production
+
+RUN apk add --no-cache curl
+
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/packages/fhs-protocol/package.json ./packages/fhs-protocol/
+COPY --from=builder /app/packages/fhs-protocol/dist ./packages/fhs-protocol/dist
+COPY --from=builder /app/examples/star-example/package.json ./examples/star-example/
+COPY --from=builder /app/examples/star-example/dist ./examples/star-example/dist
+
+WORKDIR /app/examples/star-example
+EXPOSE 43111
+
+ENV LLM_PROVIDER_PORT=43111
+ENV LLM_PROVIDER_HOST=star
+ENV REGISTRY_URL=ws://navigator:8081/fhs/v1/ws
+ENV LLAMA_CPP_URL=http://host.containers.internal:43110/v1
+ENV PROVIDER_ID=did:key:macmini-raul
+ENV PROVIDER_NAME="Mac mini de Raul"
+
+CMD ["node", "dist/index.js"]
