@@ -21,7 +21,7 @@ Ningún provider de este repo puede definir ni cambiar el contrato del protocolo
 | Provider | Tipo FHS | Qué expone | Motor interno (referencia, no recomendación) |
 |---|---|---|---|
 | [`examples/star-example`](examples/star-example/) | `llm` | Chat vía LLM local | `llama-server` (llama.cpp) sirviendo `qwen2.5-coder-3b-instruct` |
-| [`examples/satellite-ocr-example`](examples/satellite-ocr-example/) | `mcp` | Tool `ocr_extract` | Tesseract OCR (CLI, vía `execFile`) |
+| [`examples/satellite-ocr-example`](examples/satellite-ocr-example/) | `mcp` | Tool `ocr_extract` | Puente delgado a un servicio OCR HTTP externo (ej. Tesseract vía el proyecto separado `ether`), no hace OCR él mismo |
 | [`examples/rag-provider`](examples/rag-provider/) | `mcp` | Tools `document_index`/`document_query` | Chunking + similitud de solapamiento de palabras (Jaccard) — placeholder mínimo, ver nota abajo |
 | [`examples/kb-provider`](examples/kb-provider/) | `mcp` | Tool `kb_query` | Carga de `.txt` desde carpeta local + misma similitud Jaccard — placeholder mínimo |
 
@@ -33,7 +33,7 @@ Cada carpeta tiene su propio `README.md` con detalle de hardware/stack, variable
 
 - Node.js >= 20
 - Un Registry FHS corriendo y alcanzable (típicamente Atlas, de `galaxIA`) — vía `REGISTRY_URL` o descubrimiento mDNS automático (`SPEC-P2P-0001`).
-- Dependencias específicas por provider (ver cada README): `llama-server` para `star-example`, `tesseract` para `satellite-ocr-example`.
+- Dependencias específicas por provider (ver cada README): `llama-server` para `star-example`; un servicio OCR HTTP externo alcanzable (`OCR_SERVICE_URL`) para `satellite-ocr-example`.
 
 ## Instalación
 

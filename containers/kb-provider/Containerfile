@@ -4,21 +4,22 @@
 # operador (TASK-KB-0002) — este ejemplo solo carga una carpeta local al
 # arrancar, no es una recomendación de workflow (DEC-0026).
 # Expone tools FHS en puerto 43114.
+#
+# @galaxia/fhs-protocol se resuelve vía git (github:rafex/galaxIA#fhs-protocol-dist,
+# ver package.json) — por eso este build necesita git disponible durante `npm ci`.
 
 FROM docker.io/library/node:20-alpine AS builder
 WORKDIR /app
+RUN apk add --no-cache git
 
 COPY package*.json ./
-COPY packages/fhs-protocol/package.json ./packages/fhs-protocol/
 COPY examples/kb-provider/package.json ./examples/kb-provider/
 
 RUN npm ci
 
-COPY packages/fhs-protocol ./packages/fhs-protocol
 COPY examples/kb-provider ./examples/kb-provider
 
-RUN npm run build -w packages/fhs-protocol && \
-    npm run build -w examples/kb-provider
+RUN npm run build -w examples/kb-provider
 
 FROM docker.io/library/node:20-alpine
 WORKDIR /app
@@ -26,8 +27,6 @@ ENV NODE_ENV=production
 
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/packages/fhs-protocol/package.json ./packages/fhs-protocol/
-COPY --from=builder /app/packages/fhs-protocol/dist ./packages/fhs-protocol/dist
 COPY --from=builder /app/examples/kb-provider/package.json ./examples/kb-provider/
 COPY --from=builder /app/examples/kb-provider/dist ./examples/kb-provider/dist
 COPY --from=builder /app/examples/kb-provider/content ./examples/kb-provider/content

@@ -1,0 +1,89 @@
+# galaxIA-satellite-star — Docker/Podman Compose
+#
+# Estos servicios NO incluyen Atlas (Registry) — eso vive en el repo
+# `galaxIA` (ver docs/despliegue-multi-host.md ahí). Este compose asume que
+# ya tienes un Atlas corriendo y alcanzable por red (misma máquina o LAN) y
+# solo levanta los providers de este repo.
+#
+# Configura PROVIDER_REGISTRY_URL con la URL real de tu Atlas antes de
+# levantar, por ejemplo:
+#   PROVIDER_REGISTRY_URL=ws://192.168.3.137:30083/fhs/v1/ws podman-compose up -d --build
+#
+# Si Atlas corre en la misma máquina fuera de contenedores, usa
+# host.containers.internal (podman) / host.docker.internal (docker).
+
+services:
+  star:
+    build:
+      context: ..
+      dockerfile: containers/star/Containerfile
+    container_name: fhs-star
+    ports:
+      - "43111:43111"
+    environment:
+      - LLM_PROVIDER_PORT=43111
+      - LLM_PROVIDER_HOST=${LLM_PROVIDER_HOST:-star}
+      - REGISTRY_URL=${PROVIDER_REGISTRY_URL:-ws://host.containers.internal:30083/fhs/v1/ws}
+      - LLAMA_CPP_URL=${LLAMA_CPP_URL:-http://host.containers.internal:43110/v1}
+      - PROVIDER_ID=did:key:macmini-raul
+      - PROVIDER_NAME=Mac mini de Raul
+      - MODEL_ID=qwen2.5-coder-3b-instruct
+      - MODEL_DISPLAY_NAME=Qwen 2.5 Coder 3B Instruct
+      - MODEL_CONTEXT_WINDOW=4096
+      - MODEL_TOOL_CALLING_SUPPORTED=true
+    extra_hosts:
+      - "host.containers.internal:host-gateway"
+    restart: unless-stopped
+
+  satellite-ocr:
+    build:
+      context: ..
+      dockerfile: containers/satellite-ocr/Containerfile
+    container_name: fhs-satellite-ocr
+    ports:
+      - "43112:43112"
+    environment:
+      - OCR_PROVIDER_PORT=43112
+      - OCR_PROVIDER_HOST=${OCR_PROVIDER_HOST:-satellite-ocr}
+      - REGISTRY_URL=${PROVIDER_REGISTRY_URL:-ws://host.containers.internal:30083/fhs/v1/ws}
+      - OCR_SERVICE_URL=${OCR_SERVICE_URL:-http://ether-ocr-api:8000}
+      - OCR_API_KEY=${OCR_API_KEY:-dev-key-ether-ocr}
+      - PROVIDER_ID=did:key:ocr-provider-01
+      - PROVIDER_NAME=OCR FHS Provider
+    extra_hosts:
+      - "host.containers.internal:host-gateway"
+    restart: unless-stopped
+
+  rag-provider:
+    build:
+      context: ..
+      dockerfile: containers/rag-provider/Containerfile
+    container_name: fhs-rag-provider
+    ports:
+      - "43113:43113"
+    environment:
+      - RAG_PROVIDER_PORT=43113
+      - RAG_PROVIDER_HOST=${RAG_PROVIDER_HOST:-rag-provider}
+      - REGISTRY_URL=${PROVIDER_REGISTRY_URL:-ws://host.containers.internal:30083/fhs/v1/ws}
+      - PROVIDER_ID=did:key:rag-provider-01
+      - PROVIDER_NAME=RAG FHS Provider
+    extra_hosts:
+      - "host.containers.internal:host-gateway"
+    restart: unless-stopped
+
+  kb-provider:
+    build:
+      context: ..
+      dockerfile: containers/kb-provider/Containerfile
+    container_name: fhs-kb-provider
+    ports:
+      - "43114:43114"
+    environment:
+      - KB_PROVIDER_PORT=43114
+      - KB_PROVIDER_HOST=${KB_PROVIDER_HOST:-kb-provider}
+      - REGISTRY_URL=${PROVIDER_REGISTRY_URL:-ws://host.containers.internal:30083/fhs/v1/ws}
+      - PROVIDER_ID=did:key:kb-provider-01
+      - PROVIDER_NAME=KB FHS Provider
+    extra_hosts:
+      - "host.containers.internal:host-gateway"
+    restart: unless-stopped
