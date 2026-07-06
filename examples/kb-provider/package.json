@@ -1,0 +1,24 @@
+{
+  "name": "@galaxia/kb-provider-example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "KB Provider FHS — bases de conocimiento de solo lectura compartidas entre conversaciones (SPEC-KB-0001). El proceso de curaduría/indexado es responsabilidad exclusiva del operador (TASK-KB-0002) — este ejemplo solo carga una carpeta local al arrancar, no es una recomendación de workflow.",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@galaxia/fhs-protocol": "*",
+    "bonjour-service": "^1.4.2",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/ws": "^8.5.10",
+    "tsx": "^4.15.0",
+    "typescript": "^5.5.0"
+  }
+}

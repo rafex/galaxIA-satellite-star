@@ -1,0 +1,43 @@
+# Contenedor del RAG Provider FHS (SPEC-RAG-0001)
+# Indexado y recuperación de documentos por conversación — motor interno
+# mínimo (solapamiento de palabras), no una recomendación de diseño
+# (DEC-0026): cualquier operador puede sustituirlo por su propio motor de
+# embeddings sin cambiar el contrato FHS.
+# Expone tools FHS en puerto 43113.
+
+FROM docker.io/library/node:20-alpine AS builder
+WORKDIR /app
+
+COPY package*.json ./
+COPY packages/fhs-protocol/package.json ./packages/fhs-protocol/
+COPY examples/rag-provider/package.json ./examples/rag-provider/
+
+RUN npm ci
+
+COPY packages/fhs-protocol ./packages/fhs-protocol
+COPY examples/rag-provider ./examples/rag-provider
+
+RUN npm run build -w packages/fhs-protocol && \
+    npm run build -w examples/rag-provider
+
+FROM docker.io/library/node:20-alpine
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/packages/fhs-protocol/package.json ./packages/fhs-protocol/
+COPY --from=builder /app/packages/fhs-protocol/dist ./packages/fhs-protocol/dist
+COPY --from=builder /app/examples/rag-provider/package.json ./examples/rag-provider/
+COPY --from=builder /app/examples/rag-provider/dist ./examples/rag-provider/dist
+
+WORKDIR /app/examples/rag-provider
+EXPOSE 43113
+
+ENV RAG_PROVIDER_PORT=43113
+ENV RAG_PROVIDER_HOST=rag-provider
+ENV REGISTRY_URL=ws://atlas:8081/fhs/v1/ws
+ENV PROVIDER_ID=did:key:rag-provider-01
+ENV PROVIDER_NAME="RAG FHS Provider"
+
+CMD ["node", "dist/index.js"]

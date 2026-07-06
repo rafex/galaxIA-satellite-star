@@ -1,0 +1,24 @@
+{
+  "name": "@galaxia/star-example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "LLM Provider FHS — nodo que expone un LLM vía protocolo FHS WebSocket, sin HTTP directo.",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@galaxia/fhs-protocol": "*",
+    "bonjour-service": "^1.4.2",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/ws": "^8.5.10",
+    "tsx": "^4.15.0",
+    "typescript": "^5.5.0"
+  }
+}
