@@ -8,8 +8,8 @@ import type {
   ChatCompletedMessage,
   ChatErrorMessage,
   DispatchAckMessage,
-} from "@galaxia/fhs-protocol";
-import { FHS_ERROR_CODES, signPayload } from "@galaxia/fhs-protocol";
+} from "@rafex/galaxia-fhs-protocol";
+import { FHS_ERROR_CODES, signPayload } from "@rafex/galaxia-fhs-protocol";
 import { LlmBridge } from "./llm-bridge.js";
 import { loadOrCreateIdentity } from "./identity-store.js";
 import { discoverRegistryUrl } from "./registry-discovery.js";

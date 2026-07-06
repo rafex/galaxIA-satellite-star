@@ -11,8 +11,8 @@ import type {
   ToolListRequestMessage,
   ToolListResponseMessage,
   DispatchAckMessage,
-} from "@galaxia/fhs-protocol";
-import { FHS_ERROR_CODES, signPayload } from "@galaxia/fhs-protocol";
+} from "@rafex/galaxia-fhs-protocol";
+import { FHS_ERROR_CODES, signPayload } from "@rafex/galaxia-fhs-protocol";
 import { KbBridge } from "./kb-bridge.js";
 import { loadOrCreateIdentity } from "./identity-store.js";
 import { discoverRegistryUrl } from "./registry-discovery.js";

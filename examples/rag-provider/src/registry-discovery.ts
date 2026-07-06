@@ -1,5 +1,5 @@
 import { Bonjour } from "bonjour-service";
-import { verifySignature } from "@galaxia/fhs-protocol";
+import { verifySignature } from "@rafex/galaxia-fhs-protocol";
 
 /**
  * Descubrimiento del Registry por mDNS (SPEC-P2P-0001, fase 1) — fallback

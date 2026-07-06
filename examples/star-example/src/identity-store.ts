@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { generateIdentity, loadIdentity, type NodeIdentity } from "@galaxia/fhs-protocol";
+import { generateIdentity, loadIdentity, type NodeIdentity } from "@rafex/galaxia-fhs-protocol";
 
 /**
  * Genera una identidad Ed25519 la primera vez y la persiste en disco; en

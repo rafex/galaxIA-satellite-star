@@ -11,12 +11,24 @@
 #
 # Si Atlas corre en la misma máquina fuera de contenedores, usa
 # host.containers.internal (podman) / host.docker.internal (docker).
+#
+# @rafex/galaxia-fhs-protocol se instala desde GitHub Packages durante el
+# build — requiere un token con permiso read:packages disponible en la
+# variable de entorno GH_TOKEN antes de levantar (ej. `export
+# GH_TOKEN=$(gh auth token)`). Se pasa a cada build como BuildKit secret
+# (nunca queda en una capa de la imagen). Con `docker compose` (v2.24+) el
+# bloque `secrets:` de abajo ya lo resuelve solo; con `podman-compose`
+# antiguo que no soporte secrets de build, construir cada imagen a mano con
+# `podman build --secret id=gh_token,env=GH_TOKEN ...` (ver comentario en
+# cada Containerfile) y luego `podman-compose up --no-build`.
 
 services:
   star:
     build:
       context: ..
       dockerfile: containers/star/Containerfile
+      secrets:
+        - gh_token
     container_name: fhs-star
     ports:
       - "43111:43111"
@@ -39,6 +51,8 @@ services:
     build:
       context: ..
       dockerfile: containers/satellite-ocr/Containerfile
+      secrets:
+        - gh_token
     container_name: fhs-satellite-ocr
     ports:
       - "43112:43112"
@@ -58,6 +72,8 @@ services:
     build:
       context: ..
       dockerfile: containers/rag-provider/Containerfile
+      secrets:
+        - gh_token
     container_name: fhs-rag-provider
     ports:
       - "43113:43113"
@@ -75,6 +91,8 @@ services:
     build:
       context: ..
       dockerfile: containers/kb-provider/Containerfile
+      secrets:
+        - gh_token
     container_name: fhs-kb-provider
     ports:
       - "43114:43114"
@@ -87,3 +105,7 @@ services:
     extra_hosts:
       - "host.containers.internal:host-gateway"
     restart: unless-stopped
+
+secrets:
+  gh_token:
+    environment: GH_TOKEN

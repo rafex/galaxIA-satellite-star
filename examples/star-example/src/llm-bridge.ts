@@ -4,7 +4,7 @@ import type {
   GenerateResponse,
   LlmMessage,
   ToolCall,
-} from "@galaxia/fhs-protocol";
+} from "@rafex/galaxia-fhs-protocol";
 
 interface LlamaChoice {
   message?: LlmMessage;

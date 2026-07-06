@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Contenedor del RAG Provider FHS (SPEC-RAG-0001)
 # Indexado y recuperación de documentos por conversación — motor interno
 # mínimo (solapamiento de palabras), no una recomendación de diseño
@@ -5,17 +6,22 @@
 # embeddings sin cambiar el contrato FHS.
 # Expone tools FHS en puerto 43113.
 #
-# @galaxia/fhs-protocol se resuelve vía git (github:rafex/galaxIA#fhs-protocol-dist,
-# ver package.json) — por eso este build necesita git disponible durante `npm ci`.
+# @rafex/galaxia-fhs-protocol se instala desde GitHub Packages (requiere
+# autenticación incluso para paquetes públicos). El token se pasa como
+# secret de BuildKit (nunca queda en una capa de la imagen ni en el
+# historial): construir con
+#   DOCKER_BUILDKIT=1 docker build --secret id=gh_token,env=GH_TOKEN -f containers/rag-provider/Containerfile .
+# o con podman (>=4):
+#   podman build --secret id=gh_token,env=GH_TOKEN -f containers/rag-provider/Containerfile .
 
 FROM docker.io/library/node:20-alpine AS builder
 WORKDIR /app
-RUN apk add --no-cache git
 
-COPY package*.json ./
+COPY package*.json .npmrc ./
 COPY examples/rag-provider/package.json ./examples/rag-provider/
 
-RUN npm ci
+RUN --mount=type=secret,id=gh_token \
+    export GH_TOKEN="$(cat /run/secrets/gh_token)" && npm ci
 
 COPY examples/rag-provider ./examples/rag-provider
 

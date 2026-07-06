@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@galaxia/fhs-protocol": "github:rafex/galaxIA#fhs-protocol-dist",
+    "@rafex/galaxia-fhs-protocol": "^0.1.0",
     "bonjour-service": "^1.4.2",
     "ws": "^8.18.0"
   },
