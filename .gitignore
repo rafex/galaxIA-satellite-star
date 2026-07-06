@@ -1,0 +1,29 @@
+# Dependencias
+node_modules/
+
+# Artefactos de build
+dist/
+*.tsbuildinfo
+
+# Entorno local (contiene paths, puertos, tokens)
+.env
+.env.local
+.env.*.local
+
+# Identidad Ed25519 por nodo (DEC-0030 en galaxIA) — se genera al primer
+# arranque de cada provider, contiene la clave privada del did:key, nunca
+# se versiona.
+.fhs-identity*.pem
+
+# Sistema
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+\#*\#
+.idea/
+.vscode/
+
+# Logs
+*.log

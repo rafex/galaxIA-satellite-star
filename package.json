@@ -1,0 +1,20 @@
+{
+  "name": "galaxia-satellite-star",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Implementaciones de referencia de nodos FHS (Star/Satellite) para galaxIA: LLM, OCR, RAG y KB providers.",
+  "type": "module",
+  "workspaces": [
+    "examples/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "typecheck": "npm run typecheck --workspaces"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}
