@@ -35,7 +35,7 @@ EXPOSE 43112
 
 ENV OCR_PROVIDER_PORT=43112
 ENV OCR_PROVIDER_HOST=satellite-ocr
-ENV REGISTRY_URL=ws://navigator:8081/fhs/v1/ws
+ENV REGISTRY_URL=ws://atlas:8081/fhs/v1/ws
 ENV OCR_SERVICE_URL=http://ether-ocr-api:8000
 ENV OCR_API_KEY=dev-key-ether-ocr
 ENV PROVIDER_ID=did:key:ocr-provider-01

@@ -35,7 +35,7 @@ EXPOSE 43111
 
 ENV LLM_PROVIDER_PORT=43111
 ENV LLM_PROVIDER_HOST=star
-ENV REGISTRY_URL=ws://navigator:8081/fhs/v1/ws
+ENV REGISTRY_URL=ws://atlas:8081/fhs/v1/ws
 ENV LLAMA_CPP_URL=http://host.containers.internal:43110/v1
 ENV PROVIDER_ID=did:key:macmini-raul
 ENV PROVIDER_NAME="Mac mini de Raul"

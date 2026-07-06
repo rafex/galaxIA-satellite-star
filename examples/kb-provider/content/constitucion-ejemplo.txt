@@ -1,0 +1,11 @@
+Constitucion Politica de los Estados Unidos Mexicanos (texto de ejemplo, resumido para pruebas).
+
+Titulo Primero: De los Derechos Humanos y sus Garantias.
+Articulo 1. En los Estados Unidos Mexicanos todas las personas gozaran de los derechos humanos reconocidos en esta Constitucion y en los tratados internacionales de los que el Estado Mexicano sea parte.
+
+Articulo 3. Toda persona tiene derecho a la educacion. El Estado impartira educacion preescolar, primaria, secundaria y media superior.
+
+Titulo Segundo: De la Soberania Nacional y de la Forma de Gobierno.
+Articulo 39. La soberania nacional reside esencial y originariamente en el pueblo. Todo poder publico dimana del pueblo y se instituye para beneficio de este.
+
+Articulo 40. Es voluntad del pueblo mexicano constituirse en una Republica representativa, democratica, laica y federal.

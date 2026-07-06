@@ -1,0 +1,44 @@
+# Contenedor del KB Provider FHS (SPEC-KB-0001)
+# Bases de conocimiento de solo lectura, compartidas entre conversaciones.
+# El proceso de curaduría/indexado es responsabilidad exclusiva del
+# operador (TASK-KB-0002) — este ejemplo solo carga una carpeta local al
+# arrancar, no es una recomendación de workflow (DEC-0026).
+# Expone tools FHS en puerto 43114.
+
+FROM docker.io/library/node:20-alpine AS builder
+WORKDIR /app
+
+COPY package*.json ./
+COPY packages/fhs-protocol/package.json ./packages/fhs-protocol/
+COPY examples/kb-provider/package.json ./examples/kb-provider/
+
+RUN npm ci
+
+COPY packages/fhs-protocol ./packages/fhs-protocol
+COPY examples/kb-provider ./examples/kb-provider
+
+RUN npm run build -w packages/fhs-protocol && \
+    npm run build -w examples/kb-provider
+
+FROM docker.io/library/node:20-alpine
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/packages/fhs-protocol/package.json ./packages/fhs-protocol/
+COPY --from=builder /app/packages/fhs-protocol/dist ./packages/fhs-protocol/dist
+COPY --from=builder /app/examples/kb-provider/package.json ./examples/kb-provider/
+COPY --from=builder /app/examples/kb-provider/dist ./examples/kb-provider/dist
+COPY --from=builder /app/examples/kb-provider/content ./examples/kb-provider/content
+
+WORKDIR /app/examples/kb-provider
+EXPOSE 43114
+
+ENV KB_PROVIDER_PORT=43114
+ENV KB_PROVIDER_HOST=kb-provider
+ENV REGISTRY_URL=ws://atlas:8081/fhs/v1/ws
+ENV PROVIDER_ID=did:key:kb-provider-01
+ENV PROVIDER_NAME="KB FHS Provider"
+
+CMD ["node", "dist/index.js"]

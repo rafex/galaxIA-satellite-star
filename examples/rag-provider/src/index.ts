@@ -1,0 +1,346 @@
+import WebSocket, { WebSocketServer } from "ws";
+import { createServer as createHttpsServer } from "node:https";
+import { readFileSync } from "node:fs";
+import type {
+  SatelliteBeacon,
+  ToolCallRequestMessage,
+  ToolCallResultMessage,
+  ToolCallErrorMessage,
+  ToolListRequestMessage,
+  ToolListResponseMessage,
+  DispatchAckMessage,
+} from "@galaxia/fhs-protocol";
+import { FHS_ERROR_CODES, signPayload } from "@galaxia/fhs-protocol";
+import { RagBridge } from "./rag-bridge.js";
+import { loadOrCreateIdentity } from "./identity-store.js";
+import { discoverRegistryUrl } from "./registry-discovery.js";
+
+// SPEC-P2P-0001 (fase 1): sin REGISTRY_URL configurado (o = "auto"), se
+// intenta descubrir el Registry por mDNS en la LAN — fallback de
+// conveniencia, nunca obligatorio. REGISTRY_EXPECTED_DID (opcional) ancla
+// qué identidad de Registry se espera para esta comunidad (DEC-0032).
+const REGISTRY_URL_ENV = process.env.REGISTRY_URL;
+const USE_MDNS_DISCOVERY = !REGISTRY_URL_ENV || REGISTRY_URL_ENV === "auto";
+const REGISTRY_EXPECTED_DID = process.env.REGISTRY_EXPECTED_DID;
+let REGISTRY_URL = REGISTRY_URL_ENV && REGISTRY_URL_ENV !== "auto" ? REGISTRY_URL_ENV : "";
+const RAG_PROVIDER_PORT = Number(process.env.RAG_PROVIDER_PORT || 43113);
+const RAG_PROVIDER_HOST = process.env.RAG_PROVIDER_HOST || "localhost";
+// TLS opt-in (PoC, certificado autofirmado — ver docs/tls-autofirmado.md).
+const TLS_CERT_PATH = process.env.TLS_CERT_PATH;
+const TLS_KEY_PATH = process.env.TLS_KEY_PATH;
+const TLS_ENABLED = !!(TLS_CERT_PATH && TLS_KEY_PATH);
+const WS_SCHEME = TLS_ENABLED ? "wss" : "ws";
+
+function wsOptions(url: string) {
+  return url.startsWith("wss://") ? { rejectUnauthorized: false } : undefined;
+}
+
+// DEC-0030: el providerId es un did:key real (Ed25519) derivado de una
+// identidad persistida en disco — ya no es un nombre elegido a mano.
+const IDENTITY_KEY_PATH = process.env.IDENTITY_KEY_PATH || "./.fhs-identity-rag.pem";
+const identity = loadOrCreateIdentity(IDENTITY_KEY_PATH);
+const PROVIDER_ID = identity.did;
+const PROVIDER_NAME = process.env.PROVIDER_NAME || "RAG FHS Provider";
+
+const manifest: SatelliteBeacon = {
+  fhsVersion: "0.1",
+  provider: {
+    id: PROVIDER_ID,
+    name: PROVIDER_NAME,
+    type: "mcp",
+    visibility: "community",
+  },
+  endpoint: {
+    protocol: "fhs",
+    url: `${WS_SCHEME}://${RAG_PROVIDER_HOST}:${RAG_PROVIDER_PORT}/fhs/v1/tools`,
+  },
+  // DEC-0025: retención acotada a la conversación (TTL explícito) y warning
+  // obligatorio — el Portal debe mostrarlo antes de aceptar el primer adjunto.
+  privacy: {
+    retention: { ttl: "PT4H" },
+    warning:
+      "El contenido de los documentos que subas se guarda solo mientras dura tu conversación (hasta 4 horas) y nunca se comparte con otros usuarios. No subas información sensible o confidencial.",
+  },
+  capabilities: [
+    {
+      id: "document.index",
+      name: "Indexado de documento para búsqueda semántica",
+      languages: ["es", "en"],
+    },
+    {
+      id: "document.query",
+      name: "Recuperación de fragmentos relevantes",
+      languages: ["es", "en"],
+    },
+  ],
+};
+
+const tools = [
+  {
+    name: "document_index",
+    description: "Trocea e indexa un documento para búsqueda semántica en esta conversación.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "Texto completo del documento" },
+        conversationId: { type: "string", description: "Id de la conversación dueña de este índice" },
+        chunkSize: { type: "number", description: "Tamaño de fragmento en palabras (default 512)" },
+        overlap: { type: "number", description: "Solapamiento entre fragmentos en palabras (default 64)" },
+      },
+      required: ["text", "conversationId"],
+    },
+  },
+  {
+    name: "document_query",
+    description: "Recupera los fragmentos más relevantes de un documento ya indexado para esta conversación.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Pregunta o texto de búsqueda" },
+        conversationId: { type: "string", description: "Id de la conversación cuyo índice se consulta" },
+        top_k: { type: "number", description: "Cuántos fragmentos devolver (default 3)" },
+      },
+      required: ["query", "conversationId"],
+    },
+  },
+];
+
+const bridge = new RagBridge();
+
+// ── Conexión al Registry FHS ──────────────────────────────────────────────
+
+function connectToRegistry() {
+  const ws = new WebSocket(REGISTRY_URL, wsOptions(REGISTRY_URL));
+
+  ws.on("open", () => {
+    log("Conectado al Registry, enviando hello...");
+    const helloTimestamp = Date.now();
+    ws.send(
+      JSON.stringify({
+        type: "hello",
+        providerId: PROVIDER_ID,
+        timestamp: helloTimestamp,
+        signature: signPayload(identity.privateKey, `${PROVIDER_ID}:${helloTimestamp}`),
+      })
+    );
+  });
+
+  ws.on("message", (data: WebSocket.Data) => {
+    const msg = JSON.parse(data.toString());
+
+    if (msg.type === "welcome") {
+      log(`Registry dio welcome (lease: ${msg.leaseSeconds}s), registrando...`);
+      const registerTimestamp = Date.now();
+      ws.send(
+        JSON.stringify({
+          type: "register",
+          providerId: PROVIDER_ID,
+          manifest,
+          timestamp: registerTimestamp,
+          signature: signPayload(identity.privateKey, `${PROVIDER_ID}:${registerTimestamp}`),
+        })
+      );
+    }
+
+    if (msg.type === "registered") {
+      log(`Registrado: ${msg.acceptedServices} servicio(s) aceptado(s)`);
+    }
+
+    if (msg.type === "error") {
+      // DEC-0009: el Registry rechaza el hello si el providerId ya tiene
+      // una conexión activa — no reintentar aquí, el "close" que sigue ya
+      // dispara el backoff de reconexión normal.
+      log(`Registry rechazó la conexión: ${msg.data?.code} — ${msg.data?.message}`);
+    }
+  });
+
+  ws.on("close", () => {
+    log("Conexión con Registry perdida, reintentando en 5s...");
+    setTimeout(connectToRegistry, 5000);
+  });
+
+  ws.on("error", (err) => {
+    log(`Error Registry: ${err.message}`);
+  });
+
+  const pingTimer = setInterval(() => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "ping" }));
+    }
+  }, 10_000);
+
+  const renewTimer = setInterval(() => {
+    if (ws.readyState === WebSocket.OPEN) {
+      const renewTimestamp = Date.now();
+      ws.send(
+        JSON.stringify({
+          type: "register",
+          providerId: PROVIDER_ID,
+          manifest,
+          timestamp: renewTimestamp,
+          signature: signPayload(identity.privateKey, `${PROVIDER_ID}:${renewTimestamp}`),
+        })
+      );
+    }
+  }, 25_000);
+
+  ws.on("close", () => {
+    clearInterval(pingTimer);
+    clearInterval(renewTimer);
+  });
+}
+
+// ── Servidor FHS de Tools (donde Navigator se conecta) ────────────────────
+
+function startToolServer() {
+  let wss: WebSocketServer;
+
+  if (TLS_ENABLED) {
+    const httpsServer = createHttpsServer({
+      cert: readFileSync(TLS_CERT_PATH!),
+      key: readFileSync(TLS_KEY_PATH!),
+    });
+    wss = new WebSocketServer({ server: httpsServer });
+    httpsServer.listen(RAG_PROVIDER_PORT, () => {
+      log(`Tool server FHS escuchando en wss://localhost:${RAG_PROVIDER_PORT}`);
+    });
+  } else {
+    wss = new WebSocketServer({ port: RAG_PROVIDER_PORT });
+    wss.on("listening", () => {
+      log(`Tool server FHS escuchando en ws://localhost:${RAG_PROVIDER_PORT}`);
+    });
+  }
+
+  wss.on("connection", (socket) => {
+    log("Navigator conectado al tool server FHS");
+
+    socket.on("message", async (raw) => {
+      try {
+        const msg = JSON.parse(raw.toString());
+
+        // ── tool.list ──
+        if (msg.type === "tool.list") {
+          const req = msg as ToolListRequestMessage;
+          const response: ToolListResponseMessage = {
+            type: "tool.list.response",
+            requestId: req.requestId,
+            tools,
+          };
+          socket.send(JSON.stringify(response));
+          return;
+        }
+
+        // ── tool.call ──
+        if (msg.type === "tool.call") {
+          const req = msg as ToolCallRequestMessage;
+          log(`tool.call ${req.requestId}: ${req.toolName}`);
+
+          // Mosquito: confirmar que la petición ya está encolada, antes de
+          // procesarla (SPEC-SATRATING-0001, docs/protocolo.md).
+          const ack: DispatchAckMessage = {
+            type: "dispatch.ack",
+            requestId: req.requestId,
+            queuedAt: Date.now(),
+          };
+          socket.send(JSON.stringify(ack));
+
+          try {
+            if (req.toolName === "document_index") {
+              const chunksIndexed = bridge.index(
+                req.arguments.conversationId,
+                req.arguments.text || "",
+                req.arguments.chunkSize,
+                req.arguments.overlap
+              );
+              const response: ToolCallResultMessage = {
+                type: "tool.result",
+                requestId: req.requestId,
+                toolName: req.toolName,
+                content: [{ type: "text", text: JSON.stringify({ chunksIndexed }) }],
+              };
+              socket.send(JSON.stringify(response));
+            } else if (req.toolName === "document_query") {
+              const chunks = bridge.query(
+                req.arguments.conversationId,
+                req.arguments.query || "",
+                req.arguments.top_k
+              );
+              const response: ToolCallResultMessage = {
+                type: "tool.result",
+                requestId: req.requestId,
+                toolName: req.toolName,
+                content: [{ type: "text", text: JSON.stringify({ chunks }) }],
+              };
+              socket.send(JSON.stringify(response));
+            } else {
+              const error: ToolCallErrorMessage = {
+                type: "tool.error",
+                requestId: req.requestId,
+                toolName: req.toolName,
+                code: FHS_ERROR_CODES.UNSUPPORTED_CAPABILITY,
+                message: `Tool no soportada: ${req.toolName}`,
+              };
+              socket.send(JSON.stringify(error));
+            }
+          } catch (err: any) {
+            const error: ToolCallErrorMessage = {
+              type: "tool.error",
+              requestId: req.requestId,
+              toolName: req.toolName,
+              code: FHS_ERROR_CODES.UPSTREAM_UNAVAILABLE,
+              message: err.message,
+            };
+            socket.send(JSON.stringify(error));
+          }
+        }
+      } catch (err: any) {
+        socket.send(
+          JSON.stringify({
+            type: "tool.error",
+            requestId: "unknown",
+            toolName: "unknown",
+            code: FHS_ERROR_CODES.PARSE_ERROR,
+            message: err.message,
+          })
+        );
+      }
+    });
+
+    socket.on("close", () => {
+      log("Navigator desconectado del tool server");
+    });
+  });
+}
+
+// ── Arranque ───────────────────────────────────────────────────────────────
+
+function log(message: string) {
+  const ts = new Date().toISOString().slice(11, 23);
+  console.log(`[fhs-rag ${ts}] ${message}`);
+}
+
+async function main() {
+  log(`Iniciando RAG Provider FHS v${manifest.fhsVersion}`);
+  log(`  Provider : ${PROVIDER_NAME} (${PROVIDER_ID})`);
+  log(`  Tools FHS: ${WS_SCHEME}://localhost:${RAG_PROVIDER_PORT}`);
+  log(`  Tools    : ${tools.map((t) => t.name).join(", ")}`);
+
+  if (USE_MDNS_DISCOVERY) {
+    log("REGISTRY_URL no configurado — buscando Registry por mDNS...");
+    try {
+      const found = await discoverRegistryUrl(REGISTRY_EXPECTED_DID);
+      REGISTRY_URL = found.url;
+      log(`Registry encontrado por mDNS: ${REGISTRY_URL} (did: ${found.did})`);
+    } catch (err: any) {
+      log(`No se pudo autodescubrir el Registry: ${err.message}`);
+      process.exit(1);
+    }
+  } else {
+    log(`  Registry : ${REGISTRY_URL}`);
+  }
+
+  connectToRegistry();
+}
+
+main();
+startToolServer();
