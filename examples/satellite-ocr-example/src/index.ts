@@ -2,6 +2,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import { createServer as createHttpsServer } from "node:https";
 import { readFileSync } from "node:fs";
 import type {
+  ArtifactRef,
   SatelliteBeacon,
   ToolCallRequestMessage,
   ToolCallResultMessage,
@@ -81,23 +82,42 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: {
-        file_base64: {
-          type: "string",
-          description: "Imagen codificada en base64",
-        },
-        filename: {
-          type: "string",
-          description: "Nombre del archivo (opcional, default: ocr.png)",
+        file: {
+          type: "object",
+          description:
+            "ArtifactRef (DEC-0047) — inline (transport: 'inline', base64) o vía IPFS (transport: 'ipfs', cid, gatewayUrl)",
         },
         lang: {
           type: "string",
           description: "Idiomas OCR separados por + (default: spa+eng)",
         },
       },
-      required: ["file_base64"],
+      required: ["file"],
     },
   },
 ];
+
+/**
+ * Resuelve un ArtifactRef a base64 — inline se usa tal cual; IPFS se
+ * descarga desde el gateway declarado (o el gateway público por default si
+ * no viene ninguno). Este provider solo lee — nunca hace unpin, esa
+ * responsabilidad es de Navigator (DEC-0051/DEC-0052), que es quien subió
+ * el archivo y tiene el endpoint de escritura.
+ */
+async function resolveFileArtifact(file: ArtifactRef): Promise<{ base64: string; filename: string }> {
+  if (file.transport === "inline") {
+    return { base64: file.base64, filename: file.filename || "ocr-image.png" };
+  }
+
+  const gatewayUrl = file.gatewayUrl || "https://ipfs.io/ipfs";
+  const url = `${gatewayUrl.replace(/\/$/, "")}/${file.cid}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`No se pudo descargar el adjunto de IPFS (${url}): ${res.status}`);
+  }
+  const buffer = await res.arrayBuffer();
+  return { base64: Buffer.from(buffer).toString("base64"), filename: file.filename || "ocr-image.png" };
+}
 
 const bridge = new OcrBridge(OCR_SERVICE_URL, OCR_API_KEY);
 
@@ -240,9 +260,10 @@ function startToolServer() {
 
           try {
             if (req.toolName === "ocr_extract") {
+              const { base64, filename } = await resolveFileArtifact(req.arguments.file as ArtifactRef);
               const result = await bridge.extract({
-                fileBase64: req.arguments.file_base64 || "",
-                filename: req.arguments.filename || "ocr-image.png",
+                fileBase64: base64,
+                filename,
                 lang: req.arguments.lang || "spa+eng",
               });
 
