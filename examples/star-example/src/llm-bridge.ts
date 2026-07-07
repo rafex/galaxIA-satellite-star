@@ -5,54 +5,11 @@ import type {
   LlmMessage,
   ToolCall,
 } from "@rafex/galaxia-fhs-protocol";
+import { tryParseWithCatalog } from "./parser-profiles.js";
 
 interface LlamaChoice {
   message?: LlmMessage;
   finish_reason?: string;
-}
-
-/**
- * Intenta reconocer una llamada a tool escrita como JSON plano en el texto de
- * respuesta, con forma `{"name": "...", "arguments": {...}}`. Solo se acepta
- * si el nombre coincide con una de las tools que realmente se ofrecieron en
- * la petición — evita falsos positivos con contenido conversacional normal
- * que por casualidad se parsea como JSON.
- */
-function tryParseFallbackToolCall(
-  content: string,
-  requestedTools: NonNullable<GenerateRequest["tools"]>
-): ToolCall | null {
-  const trimmed = content
-    .trim()
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/```\s*$/i, "")
-    .trim();
-
-  if (!trimmed.startsWith("{")) return null;
-
-  let parsed: any;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    return null;
-  }
-
-  const name = parsed?.name;
-  if (typeof name !== "string") return null;
-
-  const knownNames = new Set(requestedTools.map((t) => t.function.name));
-  if (!knownNames.has(name)) return null;
-
-  const args = parsed.arguments ?? {};
-
-  return {
-    id: `fallback_${Date.now()}`,
-    type: "function",
-    function: {
-      name,
-      arguments: typeof args === "string" ? args : JSON.stringify(args),
-    },
-  };
 }
 
 export class LlmBridge {
@@ -90,9 +47,15 @@ export class LlmBridge {
     // en versiones que no soportan el parser nativo de tool_calls) devuelven la
     // llamada a la tool como JSON plano en `content` en vez de llenar `tool_calls`.
     // Sin este fallback, `toolCalls` queda vacío y el runtime nunca ejecuta la tool
-    // aunque el modelo sí haya decidido usarla.
+    // aunque el modelo sí haya decidido usarla. El parseo tolerante ya no es
+    // hardcodeado por modelo: usa el catálogo comunitario de perfiles
+    // (SPEC-PARSER-0001/DEC-0050, https://github.com/rafex/galaxia-parser-catalog).
     if (toolCalls.length === 0 && request.tools?.length && message.content) {
-      const parsed = tryParseFallbackToolCall(message.content, request.tools);
+      const parsed = tryParseWithCatalog(
+        request.model || "unknown",
+        message.content,
+        request.tools
+      );
       if (parsed) {
         toolCalls = [parsed];
         message.tool_calls = toolCalls;
