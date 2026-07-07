@@ -9,10 +9,12 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { KbQueryChunk } from "@rafex/galaxia-fhs-protocol";
 
 interface Chunk {
   text: string;
   tokens: Set<string>;
+  sourceFile: string;
 }
 
 function tokenize(text: string): Set<string> {
@@ -69,18 +71,29 @@ export class KbBridge {
     for (const file of files) {
       const text = readFileSync(join(dir, file), "utf8");
       for (const chunkTextValue of chunkText(text, chunkSize, overlap)) {
-        this.chunks.push({ text: chunkTextValue, tokens: tokenize(chunkTextValue) });
+        this.chunks.push({ text: chunkTextValue, tokens: tokenize(chunkTextValue), sourceFile: file });
       }
     }
 
     return this.chunks.length;
   }
 
-  query(query: string, topK = 3): Array<{ text: string; score: number }> {
+  /**
+   * `citation.documentTitle` es el nombre del archivo fuente — suficiente
+   * para demostrar el contrato de SPEC-KB-0003 en este provider de
+   * referencia. Un provider real puede poblar el resto de `KbCitation`
+   * (versión, páginas, `sourceArtifact`, etc.) según su propio proceso de
+   * curaduría, que sigue sin ser responsabilidad del protocolo.
+   */
+  query(query: string, topK = 3): KbQueryChunk[] {
     if (this.chunks.length === 0) return [];
     const queryTokens = tokenize(query);
     return this.chunks
-      .map((chunk) => ({ text: chunk.text, score: similarity(queryTokens, chunk.tokens) }))
+      .map((chunk) => ({
+        text: chunk.text,
+        score: similarity(queryTokens, chunk.tokens),
+        citation: { documentTitle: chunk.sourceFile },
+      }))
       .sort((a, b) => b.score - a.score)
       .slice(0, topK);
   }
