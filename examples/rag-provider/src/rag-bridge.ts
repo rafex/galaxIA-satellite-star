@@ -12,6 +12,14 @@
 interface Chunk {
   text: string;
   tokens: Set<string>;
+  /**
+   * Procedencia del chunk (SPEC-KB-0002, DEC-0054) — "user-upload" (default)
+   * para un adjunto del propio usuario, o "kb:<providerId>" cuando el
+   * contenido se copió aquí desde una KB para fusionar resultados de varias
+   * consultas en un solo índice. Sin esto no se puede distinguir ni atribuir
+   * de dónde vino cada fragmento tras la fusión.
+   */
+  source: string;
 }
 
 function tokenize(text: string): Set<string> {
@@ -53,22 +61,31 @@ function chunkText(text: string, chunkSize: number, overlap: number): string[] {
 export class RagBridge {
   private byConversation = new Map<string, Chunk[]>();
 
-  index(conversationId: string, text: string, chunkSize = 512, overlap = 64): number {
-    const chunks = chunkText(text, chunkSize, overlap).map((chunkTextValue) => ({
+  /**
+   * Acumula chunks para la conversación — NO reemplaza los ya indexados
+   * (SPEC-KB-0002, DEC-0054). Antes de esta corrección, una segunda llamada
+   * a `index()` en la misma conversación pisaba silenciosamente el índice
+   * anterior; eso rompe la fusión multi-KB, que necesita indexar N KBs
+   * distintas (una llamada por cada una) y conservarlas todas.
+   */
+  index(conversationId: string, text: string, chunkSize = 512, overlap = 64, source = "user-upload"): number {
+    const newChunks = chunkText(text, chunkSize, overlap).map((chunkTextValue) => ({
       text: chunkTextValue,
       tokens: tokenize(chunkTextValue),
+      source,
     }));
-    this.byConversation.set(conversationId, chunks);
-    return chunks.length;
+    const existing = this.byConversation.get(conversationId) ?? [];
+    this.byConversation.set(conversationId, [...existing, ...newChunks]);
+    return newChunks.length;
   }
 
-  query(conversationId: string, query: string, topK = 3): Array<{ text: string; score: number }> {
+  query(conversationId: string, query: string, topK = 3): Array<{ text: string; score: number; source: string }> {
     const chunks = this.byConversation.get(conversationId);
     if (!chunks || chunks.length === 0) return [];
 
     const queryTokens = tokenize(query);
     return chunks
-      .map((chunk) => ({ text: chunk.text, score: similarity(queryTokens, chunk.tokens) }))
+      .map((chunk) => ({ text: chunk.text, score: similarity(queryTokens, chunk.tokens), source: chunk.source }))
       .sort((a, b) => b.score - a.score)
       .slice(0, topK);
   }

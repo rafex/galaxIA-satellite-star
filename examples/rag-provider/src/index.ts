@@ -86,6 +86,11 @@ const tools = [
         conversationId: { type: "string", description: "Id de la conversación dueña de este índice" },
         chunkSize: { type: "number", description: "Tamaño de fragmento en palabras (default 512)" },
         overlap: { type: "number", description: "Solapamiento entre fragmentos en palabras (default 64)" },
+        source: {
+          type: "string",
+          description:
+            "Procedencia del contenido (SPEC-KB-0002) — 'user-upload' (default) o 'kb:<providerId>' cuando se fusionan resultados de una KB",
+        },
       },
       required: ["text", "conversationId"],
     },
@@ -250,7 +255,8 @@ function startToolServer() {
                 req.arguments.conversationId,
                 req.arguments.text || "",
                 req.arguments.chunkSize,
-                req.arguments.overlap
+                req.arguments.overlap,
+                req.arguments.source
               );
               const response: ToolCallResultMessage = {
                 type: "tool.result",
