@@ -59,6 +59,14 @@ export class LlmBridge {
       if (parsed) {
         toolCalls = [parsed];
         message.tool_calls = toolCalls;
+        // Bug real encontrado probando el loop de Nova (nova-example) contra
+        // hardware real (DEC-0055): dejar el JSON crudo en `content` además
+        // de en `tool_calls` deja ese texto en el historial como si fuera
+        // respuesta normal del asistente. Inofensivo en una sola llamada
+        // (Star nunca relee su propio turno), pero corrompe cualquier
+        // contexto de varias rondas — se corrige aquí también por
+        // consistencia, aunque star-example no lo dispare hoy.
+        message.content = "";
       }
     }
 
