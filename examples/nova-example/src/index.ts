@@ -8,7 +8,15 @@ import type {
   ChatErrorMessage,
   DispatchAckMessage,
 } from "@rafex/galaxia-fhs-protocol";
-import { FHS_ERROR_CODES, signPayload } from "@rafex/galaxia-fhs-protocol";
+import {
+  FHS_ERROR_CODES,
+  FHS_VERSION,
+  signPayload,
+  verifySignature,
+  helloSignaturePayload,
+  registerSignaturePayload,
+  welcomeSignaturePayload,
+} from "@rafex/galaxia-fhs-protocol";
 import { LlmBridge } from "./llm-bridge.js";
 import { ReasoningLoop } from "./reasoning-loop.js";
 import { loadOrCreateIdentity } from "./identity-store.js";
@@ -94,7 +102,8 @@ function connectToRegistry() {
         type: "hello",
         providerId: PROVIDER_ID,
         timestamp: helloTimestamp,
-        signature: signPayload(identity.privateKey, `${PROVIDER_ID}:${helloTimestamp}`),
+        fhsVersion: FHS_VERSION,
+        signature: signPayload(identity.privateKey, helloSignaturePayload(PROVIDER_ID, helloTimestamp)),
       })
     );
   });
@@ -103,6 +112,18 @@ function connectToRegistry() {
     const msg = JSON.parse(data.toString());
 
     if (msg.type === "welcome") {
+      // Verifica que el welcome viene firmado por el Registry que dice ser
+      // (revisión del protocolo 2026-07-10) — protege contra un Atlas
+      // impostor en la misma LAN antes de entregarle el manifiesto.
+      if (
+        msg.registryId &&
+        msg.timestamp &&
+        msg.signature &&
+        !verifySignature(msg.registryId, welcomeSignaturePayload(msg.registryId, msg.timestamp), msg.signature)
+      ) {
+        log(`welcome con firma inválida de ${msg.registryId} — ignorando (¿Registry impostor?)`);
+        return;
+      }
       log(`Registry dio welcome (lease: ${msg.leaseSeconds}s), registrando...`);
       const registerTimestamp = Date.now();
       ws.send(
@@ -111,7 +132,7 @@ function connectToRegistry() {
           providerId: PROVIDER_ID,
           manifest,
           timestamp: registerTimestamp,
-          signature: signPayload(identity.privateKey, `${PROVIDER_ID}:${registerTimestamp}`),
+          signature: signPayload(identity.privateKey, registerSignaturePayload(PROVIDER_ID, registerTimestamp, manifest)),
         })
       );
     }
@@ -152,7 +173,7 @@ function connectToRegistry() {
           providerId: PROVIDER_ID,
           manifest,
           timestamp: renewTimestamp,
-          signature: signPayload(identity.privateKey, `${PROVIDER_ID}:${renewTimestamp}`),
+          signature: signPayload(identity.privateKey, registerSignaturePayload(PROVIDER_ID, renewTimestamp, manifest)),
         })
       );
     }
