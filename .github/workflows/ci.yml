@@ -1,0 +1,69 @@
+name: CI
+
+# Validación de Pull Requests — typecheck y build de los 5 providers de referencia.
+# No publica ni despliega nada. Bloquea el merge si typecheck o build fallan.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@rafex"
+
+      - name: Instalar dependencias
+        # @rafex/galaxia-fhs-protocol se publica en GitHub Packages — requiere
+        # autenticación aunque el paquete sea público (limitación de GitHub
+        # Packages vs. npm público). GH_TOKEN (GITHUB_TOKEN del runner) tiene
+        # permiso packages:read implícito en el mismo org.
+        # Se elimina el lockfile y se reinstala en fresco: el lockfile se
+        # genera en macOS ARM y puede no incluir resolutores para linux-x64
+        # (mismo patrón documentado en DEC-0042 del repo galaxIA).
+        run: |
+          rm -f package-lock.json
+          npm install
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - run: npm run typecheck --workspaces
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@rafex"
+
+      - name: Instalar dependencias
+        run: |
+          rm -f package-lock.json
+          npm install
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - run: npm run build --workspaces
