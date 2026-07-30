@@ -21,6 +21,7 @@ import {
 import { LlmBridge } from "./llm-bridge.js";
 import { loadOrCreateIdentity } from "./identity-store.js";
 import { discoverRegistryUrl } from "./registry-discovery.js";
+import { wsOptions } from "./ws-security.js";
 
 // SPEC-P2P-0001 (fase 1): sin REGISTRY_URL configurado (o = "auto"), se
 // intenta descubrir el Registry por mDNS en la LAN — fallback de
@@ -41,9 +42,6 @@ const TLS_KEY_PATH = process.env.TLS_KEY_PATH;
 const TLS_ENABLED = !!(TLS_CERT_PATH && TLS_KEY_PATH);
 const WS_SCHEME = TLS_ENABLED ? "wss" : "ws";
 
-function wsOptions(url: string) {
-  return url.startsWith("wss://") ? { rejectUnauthorized: false } : undefined;
-}
 const LLAMA_CPP_URL =
   process.env.LLAMA_CPP_URL || "http://localhost:43110/v1";
 // DEC-0030: el providerId es un did:key real (Ed25519) derivado de una
