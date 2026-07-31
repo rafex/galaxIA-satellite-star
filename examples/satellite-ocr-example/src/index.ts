@@ -19,6 +19,7 @@ import {
   helloSignaturePayload,
   registerSignaturePayload,
   welcomeSignaturePayload,
+  invokeSignaturePayload,
 } from "@rafex/galaxia-fhs-protocol";
 import { OcrBridge } from "./ocr-bridge.js";
 import { loadOrCreateIdentity } from "./identity-store.js";
@@ -79,6 +80,15 @@ const manifest: SatelliteBeacon = {
       languages: ["es", "en"],
     },
   ],
+  ...(process.env.NODE_INFO_CPU || process.env.NODE_INFO_RAM || process.env.NODE_INFO_GPU || process.env.NODE_INFO_LOCATION || process.env.NODE_INFO_DESCRIPTION ? {
+    nodeInfo: {
+      ...(process.env.NODE_INFO_CPU ? { cpu: process.env.NODE_INFO_CPU } : {}),
+      ...(process.env.NODE_INFO_RAM ? { ram: process.env.NODE_INFO_RAM } : {}),
+      ...(process.env.NODE_INFO_GPU ? { gpu: process.env.NODE_INFO_GPU } : {}),
+      ...(process.env.NODE_INFO_LOCATION ? { location: process.env.NODE_INFO_LOCATION } : {}),
+      ...(process.env.NODE_INFO_DESCRIPTION ? { description: process.env.NODE_INFO_DESCRIPTION } : {}),
+    },
+  } : {}),
 };
 
 const tools = [
@@ -247,9 +257,31 @@ function startToolServer() {
   wss.on("connection", (socket) => {
     log("Agent Server conectado al tool server FHS");
 
+    // DEC-0069: peticiones en vuelo por requestId — necesario para tool.cancel.
+    const pending = new Map<string, AbortController>();
+
     socket.on("message", async (raw) => {
       try {
-        const msg = JSON.parse(raw.toString());
+        const msg = JSON.parse(raw.toString()) as { type?: string; requestId?: string };
+
+        // ── tool.cancel (DEC-0069) ──
+        if (msg.type === "tool.cancel") {
+          const ctrl = pending.get(msg.requestId ?? "");
+          if (ctrl) {
+            ctrl.abort();
+            pending.delete(msg.requestId!);
+            const cancelled: ToolCallErrorMessage = {
+              type: "tool.error",
+              requestId: msg.requestId!,
+              toolName: "unknown",
+              code: FHS_ERROR_CODES.CANCELLED,
+              message: "Petición cancelada por el invocador",
+            };
+            socket.send(JSON.stringify(cancelled));
+            log(`tool.cancel ${msg.requestId} — OCR abortado`);
+          }
+          return;
+        }
 
         // ── tool.list ──
         if (msg.type === "tool.list") {
@@ -268,8 +300,26 @@ function startToolServer() {
           const req = msg as ToolCallRequestMessage;
           log(`tool.call ${req.requestId}: ${req.toolName}`);
 
-          // Mosquito: confirmar que la petición ya está encolada, antes de
-          // procesarla (SPEC-SATRATING-0001, docs/protocolo.md).
+          // DEC-0069: verificar CallerAuth si el invocador la envía.
+          if (req.callerId && req.timestamp && req.signature) {
+            if (!verifySignature(req.callerId, invokeSignaturePayload(req.callerId, req.requestId, req.timestamp), req.signature)) {
+              log(`  → UNAUTHORIZED: firma inválida de ${req.callerId}`);
+              const unauth: ToolCallErrorMessage = {
+                type: "tool.error",
+                requestId: req.requestId,
+                toolName: req.toolName,
+                code: FHS_ERROR_CODES.UNAUTHORIZED,
+                message: "Firma de invocación inválida",
+              };
+              socket.send(JSON.stringify(unauth));
+              return;
+            }
+          }
+
+          const ctrl = new AbortController();
+          pending.set(req.requestId, ctrl);
+
+          // Mosquito: confirmar que la petición ya está encolada.
           const ack: DispatchAckMessage = {
             type: "dispatch.ack",
             requestId: req.requestId,
@@ -284,7 +334,7 @@ function startToolServer() {
                 fileBase64: base64,
                 filename,
                 lang: req.arguments.lang ? String(req.arguments.lang) : "spa+eng",
-              });
+              }, ctrl.signal);
 
               const response: ToolCallResultMessage = {
                 type: "tool.result",
@@ -304,8 +354,8 @@ function startToolServer() {
               socket.send(JSON.stringify(error));
             }
           } catch (err: any) {
-            // El bridge llama a ether-ocr-api (servicio real) — cualquier
-            // fallo aquí es del upstream, no de este provider (DEC-0013).
+            // AbortError: tool.cancel ya envió CANCELLED — no enviar nada más.
+            if (err.name === "AbortError") { return; }
             const error: ToolCallErrorMessage = {
               type: "tool.error",
               requestId: req.requestId,
@@ -314,23 +364,25 @@ function startToolServer() {
               message: err.message,
             };
             socket.send(JSON.stringify(error));
+          } finally {
+            pending.delete(req.requestId);
           }
         }
       } catch (err: any) {
-        socket.send(
-          JSON.stringify({
-            type: "tool.error",
-            requestId: "unknown",
-            toolName: "unknown",
-            code: FHS_ERROR_CODES.PARSE_ERROR,
-            message: err.message,
-          })
-        );
+        socket.send(JSON.stringify({
+          type: "tool.error",
+          requestId: "unknown",
+          toolName: "unknown",
+          code: FHS_ERROR_CODES.PARSE_ERROR,
+          message: err.message,
+        }));
       }
     });
 
     socket.on("close", () => {
       log("Agent Server desconectado del tool server");
+      for (const ctrl of pending.values()) ctrl.abort();
+      pending.clear();
     });
   });
 }

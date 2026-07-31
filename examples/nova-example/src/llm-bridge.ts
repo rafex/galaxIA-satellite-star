@@ -24,7 +24,7 @@ export class LlmBridge {
     this.llamaCppUrl = llamaCppUrl.replace(/\/$/, "");
   }
 
-  async generate(request: GenerateRequest): Promise<GenerateResponse> {
+  async generate(request: GenerateRequest, signal?: AbortSignal): Promise<GenerateResponse> {
     const url = `${this.llamaCppUrl}/chat/completions`;
     const body = JSON.stringify({
       model: request.model,
@@ -35,7 +35,7 @@ export class LlmBridge {
       max_tokens: request.max_tokens,
     });
 
-    const stdout = await this.curlPost(url, body);
+    const stdout = await this.curlPost(url, body, signal);
 
     const data = JSON.parse(stdout) as {
       choices: LlamaChoice[];
@@ -77,35 +77,28 @@ export class LlmBridge {
     };
   }
 
-  private curlPost(url: string, body: string): Promise<string> {
+  private curlPost(url: string, body: string, signal?: AbortSignal): Promise<string> {
     return new Promise((resolve, reject) => {
       const child = execFile(
-      "curl",
-      [
-        "-sfS",
-        "--max-time", "300",
-        "-X", "POST",
-        url,
-        "-H", "Content-Type: application/json",
-        "-d", body,
-      ],
-      {
-        timeout: 310_000,
-        maxBuffer: 16 * 1024 * 1024,
-      },
+        "curl",
+        [
+          "-sfS",
+          "--max-time", "300",
+          "-X", "POST",
+          url,
+          "-H", "Content-Type: application/json",
+          "-d", body,
+        ],
+        { timeout: 310_000, maxBuffer: 16 * 1024 * 1024, signal },
         (err, stdout, stderr) => {
           if (err) {
-            reject(
-              new Error(
-                `llama.cpp request failed: ${err.message}${stderr ? ` — ${stderr.slice(0, 200)}` : ""}`
-              )
-            );
+            if (err.name === "AbortError") { reject(err); return; }
+            reject(new Error(`llama.cpp request failed: ${err.message}${stderr ? ` — ${stderr.slice(0, 200)}` : ""}`));
             return;
           }
           resolve(stdout);
         }
       );
-
       child.on("error", reject);
     });
   }

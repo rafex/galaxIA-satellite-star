@@ -17,6 +17,7 @@ import {
   helloSignaturePayload,
   registerSignaturePayload,
   welcomeSignaturePayload,
+  invokeSignaturePayload,
 } from "@rafex/galaxia-fhs-protocol";
 import { LlmBridge } from "./llm-bridge.js";
 import { loadOrCreateIdentity } from "./identity-store.js";
@@ -64,6 +65,14 @@ const MODEL_CONTEXT_WINDOW = Number(process.env.MODEL_CONTEXT_WINDOW || 4096);
 const MODEL_TOOL_CALLING_SUPPORTED =
   (process.env.MODEL_TOOL_CALLING_SUPPORTED ?? "true") !== "false";
 
+// DEC-0081: metadatos de hardware declarados por el operador — opcionales.
+const NODE_INFO_CPU = process.env.NODE_INFO_CPU;
+const NODE_INFO_RAM = process.env.NODE_INFO_RAM;
+const NODE_INFO_GPU = process.env.NODE_INFO_GPU;
+const NODE_INFO_LOCATION = process.env.NODE_INFO_LOCATION;
+const NODE_INFO_DESCRIPTION = process.env.NODE_INFO_DESCRIPTION;
+const hasNodeInfo = NODE_INFO_CPU || NODE_INFO_RAM || NODE_INFO_GPU || NODE_INFO_LOCATION || NODE_INFO_DESCRIPTION;
+
 const manifest: StarBeacon = {
   fhsVersion: "0.1",
   provider: {
@@ -93,6 +102,15 @@ const manifest: StarBeacon = {
         : { supported: false },
     },
   ],
+  ...(hasNodeInfo ? {
+    nodeInfo: {
+      ...(NODE_INFO_CPU ? { cpu: NODE_INFO_CPU } : {}),
+      ...(NODE_INFO_RAM ? { ram: NODE_INFO_RAM } : {}),
+      ...(NODE_INFO_GPU ? { gpu: NODE_INFO_GPU } : {}),
+      ...(NODE_INFO_LOCATION ? { location: NODE_INFO_LOCATION } : {}),
+      ...(NODE_INFO_DESCRIPTION ? { description: NODE_INFO_DESCRIPTION } : {}),
+    },
+  } : {}),
 };
 
 const bridge = new LlmBridge(LLAMA_CPP_URL);
@@ -195,92 +213,6 @@ function connectToRegistry() {
 
 // ── Servidor FHS de Chat (donde el Agent Server se conecta) ───────────────
 
-async function handleMessage(socket: WebSocket, raw: WebSocket.Data) {
-  try {
-    const msg = JSON.parse(raw.toString());
-
-    if (msg.type !== "chat.request") return;
-
-    const req = msg as ChatRequestMessage;
-    log(
-      `chat.request ${req.requestId}: model=${req.request.model}, stream=${req.request.stream}`
-    );
-    log(
-      `  tools=${req.request.tools ? req.request.tools.length : 0}, messages=${req.request.messages?.length || 0}`
-    );
-
-    // Mosquito: confirmar que la petición ya está encolada, antes de
-    // procesarla (SPEC-SATRATING-0001, docs/protocolo.md).
-    const ack: DispatchAckMessage = {
-      type: "dispatch.ack",
-      requestId: req.requestId,
-      queuedAt: Date.now(),
-    };
-    socket.send(JSON.stringify(ack));
-
-    try {
-      if (req.request.stream) {
-        log(`  → iniciando stream`);
-        const generator = bridge.stream(req.request);
-        let result = await generator.next();
-
-        while (!result.done) {
-          const deltaMsg: ChatDeltaMessage = {
-            type: "chat.delta",
-            requestId: req.requestId,
-            delta: result.value,
-          };
-          socket.send(JSON.stringify(deltaMsg));
-          result = await generator.next();
-        }
-
-        log(`  → stream completado`);
-        const completed: ChatCompletedMessage = {
-          type: "chat.completed",
-          requestId: req.requestId,
-          response: result.value,
-        };
-        socket.send(JSON.stringify(completed));
-      } else {
-        log(`  → llamando bridge.generate()`);
-        const startedAt = Date.now();
-        const response = await bridge.generate(req.request);
-        log(`  → bridge.generate() completado en ${Date.now() - startedAt}ms`);
-        const completed: ChatCompletedMessage = {
-          type: "chat.completed",
-          requestId: req.requestId,
-          response,
-        };
-        socket.send(JSON.stringify(completed));
-        log(`  → chat.completed enviado`);
-      }
-    } catch (err: any) {
-      log(`  → ERROR: ${err.message}`);
-      console.error(`[fhs-llm] bridge error:`, err);
-      // El bridge llama a llama-server (servicio real) — cualquier fallo
-      // aquí es del upstream, no de este provider (DEC-0013).
-      const errorMsg: ChatErrorMessage = {
-        type: "chat.error",
-        requestId: req.requestId,
-        code: FHS_ERROR_CODES.UPSTREAM_UNAVAILABLE,
-        message: err.message,
-      };
-      socket.send(JSON.stringify(errorMsg));
-    }
-  } catch (err: any) {
-    log(`  → PARSE ERROR: ${err.message}`);
-    console.error(`[fhs-llm] parse error:`, err);
-    socket.send(
-      JSON.stringify({
-        type: "chat.error",
-        requestId: "unknown",
-        code: FHS_ERROR_CODES.PARSE_ERROR,
-        message: err.message,
-      })
-    );
-  }
-}
-
 function startChatServer() {
   let wss: WebSocketServer;
 
@@ -303,18 +235,147 @@ function startChatServer() {
   wss.on("connection", (socket) => {
     log("Agent Server conectado al chat FHS");
 
+    // DEC-0069: peticiones en vuelo por requestId — necesario para chat.cancel.
+    const pending = new Map<string, AbortController>();
+
     socket.on("message", (raw) => {
-      handleMessage(socket, raw);
+      void handleMessage(socket, pending, raw);
     });
 
     socket.on("close", () => {
       log("Agent Server desconectado del chat");
+      // Abortar cualquier inferencia en curso al cerrar la conexión.
+      for (const ctrl of pending.values()) ctrl.abort();
+      pending.clear();
     });
 
     socket.on("error", (err) => {
       log(`Error en socket de chat: ${err.message}`);
     });
   });
+}
+
+async function handleMessage(
+  socket: WebSocket,
+  pending: Map<string, AbortController>,
+  raw: WebSocket.Data
+) {
+  try {
+    const msg = JSON.parse(raw.toString()) as { type?: string; requestId?: string };
+
+    // ── chat.cancel (DEC-0069): abortar inferencia en curso ────────────────
+    if (msg.type === "chat.cancel") {
+      const ctrl = pending.get(msg.requestId ?? "");
+      if (ctrl) {
+        ctrl.abort();
+        pending.delete(msg.requestId!);
+        const cancelledMsg: ChatErrorMessage = {
+          type: "chat.error",
+          requestId: msg.requestId!,
+          code: FHS_ERROR_CODES.CANCELLED,
+          message: "Petición cancelada por el invocador",
+        };
+        socket.send(JSON.stringify(cancelledMsg));
+        log(`chat.cancel ${msg.requestId} — inferencia abortada`);
+      }
+      return;
+    }
+
+    if (msg.type !== "chat.request") return;
+
+    const req = msg as ChatRequestMessage;
+    log(`chat.request ${req.requestId}: model=${req.request.model}, stream=${req.request.stream}`);
+    log(`  tools=${req.request.tools ? req.request.tools.length : 0}, messages=${req.request.messages?.length || 0}`);
+
+    // DEC-0069: verificar CallerAuth si el invocador la envía.
+    // Solo rechaza si las credenciales están presentes pero son inválidas —
+    // llamadas anónimas se aceptan para compatibilidad hacia atrás.
+    if (req.callerId && req.timestamp && req.signature) {
+      if (!verifySignature(req.callerId, invokeSignaturePayload(req.callerId, req.requestId, req.timestamp), req.signature)) {
+        log(`  → UNAUTHORIZED: firma de invocación inválida de ${req.callerId}`);
+        const unauth: ChatErrorMessage = {
+          type: "chat.error",
+          requestId: req.requestId,
+          code: FHS_ERROR_CODES.UNAUTHORIZED,
+          message: "Firma de invocación inválida",
+        };
+        socket.send(JSON.stringify(unauth));
+        return;
+      }
+    }
+
+    const ctrl = new AbortController();
+    pending.set(req.requestId, ctrl);
+
+    // Mosquito: confirmar que la petición ya está encolada.
+    const ack: DispatchAckMessage = {
+      type: "dispatch.ack",
+      requestId: req.requestId,
+      queuedAt: Date.now(),
+    };
+    socket.send(JSON.stringify(ack));
+
+    try {
+      if (req.request.stream) {
+        log(`  → iniciando stream`);
+        const generator = bridge.stream(req.request, ctrl.signal);
+        let result = await generator.next();
+
+        while (!result.done) {
+          const deltaMsg: ChatDeltaMessage = {
+            type: "chat.delta",
+            requestId: req.requestId,
+            delta: result.value,
+          };
+          socket.send(JSON.stringify(deltaMsg));
+          result = await generator.next();
+        }
+
+        log(`  → stream completado`);
+        const completed: ChatCompletedMessage = {
+          type: "chat.completed",
+          requestId: req.requestId,
+          response: result.value,
+        };
+        socket.send(JSON.stringify(completed));
+      } else {
+        log(`  → llamando bridge.generate()`);
+        const startedAt = Date.now();
+        const response = await bridge.generate(req.request, ctrl.signal);
+        log(`  → bridge.generate() completado en ${Date.now() - startedAt}ms`);
+        const completed: ChatCompletedMessage = {
+          type: "chat.completed",
+          requestId: req.requestId,
+          response,
+        };
+        socket.send(JSON.stringify(completed));
+        log(`  → chat.completed enviado`);
+      }
+    } catch (err: any) {
+      // AbortError: chat.cancel ya envió CANCELLED — no enviar nada más.
+      if (err.name === "AbortError") { return; }
+      log(`  → ERROR: ${err.message}`);
+      console.error(`[fhs-llm] bridge error:`, err);
+      const errorMsg: ChatErrorMessage = {
+        type: "chat.error",
+        requestId: req.requestId,
+        code: FHS_ERROR_CODES.UPSTREAM_UNAVAILABLE,
+        message: err.message,
+      };
+      socket.send(JSON.stringify(errorMsg));
+    } finally {
+      pending.delete(req.requestId);
+    }
+  } catch (err: any) {
+    log(`  → PARSE ERROR: ${err.message}`);
+    console.error(`[fhs-llm] parse error:`, err);
+    socket.send(JSON.stringify({
+      type: "chat.error",
+      requestId: "unknown",
+      code: FHS_ERROR_CODES.PARSE_ERROR,
+      message: err.message,
+    }));
+  }
 }
 
 // ── Arranque ───────────────────────────────────────────────────────────────

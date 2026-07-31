@@ -16,6 +16,7 @@ import {
   helloSignaturePayload,
   registerSignaturePayload,
   welcomeSignaturePayload,
+  invokeSignaturePayload,
 } from "@rafex/galaxia-fhs-protocol";
 import { LlmBridge } from "./llm-bridge.js";
 import { ReasoningLoop } from "./reasoning-loop.js";
@@ -81,6 +82,15 @@ const manifest: NovaBeacon = {
     },
   ],
   reasoning: { maxSteps: MAX_REASONING_STEPS },
+  ...(process.env.NODE_INFO_CPU || process.env.NODE_INFO_RAM || process.env.NODE_INFO_GPU || process.env.NODE_INFO_LOCATION || process.env.NODE_INFO_DESCRIPTION ? {
+    nodeInfo: {
+      ...(process.env.NODE_INFO_CPU ? { cpu: process.env.NODE_INFO_CPU } : {}),
+      ...(process.env.NODE_INFO_RAM ? { ram: process.env.NODE_INFO_RAM } : {}),
+      ...(process.env.NODE_INFO_GPU ? { gpu: process.env.NODE_INFO_GPU } : {}),
+      ...(process.env.NODE_INFO_LOCATION ? { location: process.env.NODE_INFO_LOCATION } : {}),
+      ...(process.env.NODE_INFO_DESCRIPTION ? { description: process.env.NODE_INFO_DESCRIPTION } : {}),
+    },
+  } : {}),
 };
 
 const bridge = new LlmBridge(LLAMA_CPP_URL);
@@ -184,65 +194,6 @@ function connectToRegistry() {
 
 // ── Servidor FHS de Chat (donde Navigator se conecta) ──────────────────────
 
-async function handleMessage(socket: WebSocket, raw: WebSocket.Data) {
-  try {
-    const msg = JSON.parse(raw.toString());
-
-    if (msg.type !== "chat.request") return;
-
-    const req = msg as ChatRequestMessage;
-    log(
-      `chat.request ${req.requestId}: model=${req.request.model}, maxReasoningSteps=${req.request.maxReasoningSteps ?? "(default " + MAX_REASONING_STEPS + ")"}`
-    );
-
-    // Mosquito: confirmar que la petición ya está encolada, antes de
-    // procesarla (SPEC-SATRATING-0001, docs/protocolo.md). Un Nova puede
-    // tardar bastante más que un Star (varias rondas) — el ack temprano
-    // sigue siendo igual de importante para no dejar a Navigator a ciegas.
-    const ack: DispatchAckMessage = {
-      type: "dispatch.ack",
-      requestId: req.requestId,
-      queuedAt: Date.now(),
-    };
-    socket.send(JSON.stringify(ack));
-
-    try {
-      const startedAt = Date.now();
-      const response = await reasoningLoop.run(req.request);
-      log(`  → resuelto en ${response.reasoningSteps} ronda(s), ${Date.now() - startedAt}ms`);
-      const completed: ChatCompletedMessage = {
-        type: "chat.completed",
-        requestId: req.requestId,
-        response,
-      };
-      socket.send(JSON.stringify(completed));
-    } catch (err: any) {
-      log(`  → ERROR: ${err.message}`);
-      console.error(`[fhs-nova] reasoning loop error:`, err);
-      // El bridge llama a llama-server (servicio real) — cualquier fallo
-      // aquí es del upstream, no de este provider (DEC-0013).
-      const errorMsg: ChatErrorMessage = {
-        type: "chat.error",
-        requestId: req.requestId,
-        code: FHS_ERROR_CODES.UPSTREAM_UNAVAILABLE,
-        message: err.message,
-      };
-      socket.send(JSON.stringify(errorMsg));
-    }
-  } catch (err: any) {
-    log(`  → PARSE ERROR: ${err.message}`);
-    console.error(`[fhs-nova] parse error:`, err);
-    socket.send(
-      JSON.stringify({
-        type: "chat.error",
-        requestId: "unknown",
-        code: FHS_ERROR_CODES.PARSE_ERROR,
-        message: err.message,
-      })
-    );
-  }
-}
-
 function startChatServer() {
   let wss: WebSocketServer;
 
@@ -265,18 +216,118 @@ function startChatServer() {
   wss.on("connection", (socket) => {
     log("Navigator conectado al chat FHS");
 
+    // DEC-0069: peticiones en vuelo por requestId — necesario para chat.cancel.
+    const pending = new Map<string, AbortController>();
+
     socket.on("message", (raw) => {
-      handleMessage(socket, raw);
+      void handleMessage(socket, pending, raw);
     });
 
     socket.on("close", () => {
       log("Navigator desconectado del chat");
+      for (const ctrl of pending.values()) ctrl.abort();
+      pending.clear();
     });
 
     socket.on("error", (err) => {
       log(`Error en socket de chat: ${err.message}`);
     });
   });
+}
+
+async function handleMessage(
+  socket: WebSocket,
+  pending: Map<string, AbortController>,
+  raw: WebSocket.Data
+) {
+  try {
+    const msg = JSON.parse(raw.toString()) as { type?: string; requestId?: string };
+
+    // ── chat.cancel (DEC-0069): abortar loop de razonamiento en curso ──────
+    if (msg.type === "chat.cancel") {
+      const ctrl = pending.get(msg.requestId ?? "");
+      if (ctrl) {
+        ctrl.abort();
+        pending.delete(msg.requestId!);
+        const cancelledMsg: ChatErrorMessage = {
+          type: "chat.error",
+          requestId: msg.requestId!,
+          code: FHS_ERROR_CODES.CANCELLED,
+          message: "Petición cancelada por el invocador",
+        };
+        socket.send(JSON.stringify(cancelledMsg));
+        log(`chat.cancel ${msg.requestId} — loop de razonamiento abortado`);
+      }
+      return;
+    }
+
+    if (msg.type !== "chat.request") return;
+
+    const req = msg as ChatRequestMessage;
+    log(`chat.request ${req.requestId}: model=${req.request.model}, maxReasoningSteps=${req.request.maxReasoningSteps ?? "(default " + MAX_REASONING_STEPS + ")"}`);
+
+    // DEC-0069: verificar CallerAuth si el invocador la envía.
+    if (req.callerId && req.timestamp && req.signature) {
+      if (!verifySignature(req.callerId, invokeSignaturePayload(req.callerId, req.requestId, req.timestamp), req.signature)) {
+        log(`  → UNAUTHORIZED: firma de invocación inválida de ${req.callerId}`);
+        const unauth: ChatErrorMessage = {
+          type: "chat.error",
+          requestId: req.requestId,
+          code: FHS_ERROR_CODES.UNAUTHORIZED,
+          message: "Firma de invocación inválida",
+        };
+        socket.send(JSON.stringify(unauth));
+        return;
+      }
+    }
+
+    const ctrl = new AbortController();
+    pending.set(req.requestId, ctrl);
+
+    // Mosquito: confirmar que la petición ya está encolada. Un Nova puede
+    // tardar bastante más que un Star (varias rondas) — el ack temprano
+    // sigue siendo igual de importante para no dejar a Navigator a ciegas.
+    const ack: DispatchAckMessage = {
+      type: "dispatch.ack",
+      requestId: req.requestId,
+      queuedAt: Date.now(),
+    };
+    socket.send(JSON.stringify(ack));
+
+    try {
+      const startedAt = Date.now();
+      const response = await reasoningLoop.run(req.request, ctrl.signal);
+      log(`  → resuelto en ${response.reasoningSteps} ronda(s), ${Date.now() - startedAt}ms`);
+      const completed: ChatCompletedMessage = {
+        type: "chat.completed",
+        requestId: req.requestId,
+        response,
+      };
+      socket.send(JSON.stringify(completed));
+    } catch (err: any) {
+      if (err.name === "AbortError") { return; }
+      log(`  → ERROR: ${err.message}`);
+      console.error(`[fhs-nova] reasoning loop error:`, err);
+      const errorMsg: ChatErrorMessage = {
+        type: "chat.error",
+        requestId: req.requestId,
+        code: FHS_ERROR_CODES.UPSTREAM_UNAVAILABLE,
+        message: err.message,
+      };
+      socket.send(JSON.stringify(errorMsg));
+    } finally {
+      pending.delete(req.requestId);
+    }
+  } catch (err: any) {
+    log(`  → PARSE ERROR: ${err.message}`);
+    console.error(`[fhs-nova] parse error:`, err);
+    socket.send(JSON.stringify({
+      type: "chat.error",
+      requestId: "unknown",
+      code: FHS_ERROR_CODES.PARSE_ERROR,
+      message: err.message,
+    }));
+  }
 }
 
 // ── Arranque ───────────────────────────────────────────────────────────────
