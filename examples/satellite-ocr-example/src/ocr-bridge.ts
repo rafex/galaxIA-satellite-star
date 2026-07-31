@@ -23,7 +23,7 @@ export class OcrBridge {
     this.apiKey = apiKey;
   }
 
-  async extract(input: OcrInput): Promise<OcrOutput> {
+  async extract(input: OcrInput, signal?: AbortSignal): Promise<OcrOutput> {
     const filename = input.filename || `ocr-${randomUUID()}.png`;
     const tmpPath = join(tmpdir(), filename);
 
@@ -32,7 +32,7 @@ export class OcrBridge {
       await writeFile(tmpPath, buffer);
 
       const url = `${this.serviceUrl}/api/v1/ocr`;
-      const stdout = await this.curlMultipart(url, tmpPath, input.lang || "spa+eng");
+      const stdout = await this.curlMultipart(url, tmpPath, input.lang || "spa+eng", signal);
 
       const data = JSON.parse(stdout) as {
         status?: string;
@@ -50,7 +50,8 @@ export class OcrBridge {
   private curlMultipart(
     url: string,
     filePath: string,
-    lang: string
+    lang: string,
+    signal?: AbortSignal
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       const args = [
@@ -63,14 +64,11 @@ export class OcrBridge {
 
       const child = execFile(
         "curl", args,
-        { timeout: 35_000, maxBuffer: 16 * 1024 * 1024 },
+        { timeout: 35_000, maxBuffer: 16 * 1024 * 1024, signal },
         (err, stdout, stderr) => {
           if (err) {
-            reject(
-              new Error(
-                `OCR request failed: ${err.message}${stderr ? ` — ${stderr.slice(0, 200)}` : ""}`
-              )
-            );
+            if (err.name === "AbortError") { reject(err); return; }
+            reject(new Error(`OCR request failed: ${err.message}${stderr ? ` — ${stderr.slice(0, 200)}` : ""}`));
             return;
           }
           resolve(stdout);

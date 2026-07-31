@@ -42,7 +42,7 @@ export class ReasoningLoop {
     private hardMaxSteps: number
   ) {}
 
-  async run(request: GenerateRequest): Promise<GenerateResponse> {
+  async run(request: GenerateRequest, signal?: AbortSignal): Promise<GenerateResponse> {
     // `maxReasoningSteps` es una sugerencia de quien pide (DEC-0055) — el
     // techo real de este Nova siempre gana si piden más de lo que soporta.
     const maxSteps = Math.max(1, Math.min(request.maxReasoningSteps ?? this.hardMaxSteps, this.hardMaxSteps));
@@ -52,7 +52,7 @@ export class ReasoningLoop {
     let lastResponse: GenerateResponse | null = null;
 
     for (let step = 1; step <= maxSteps; step++) {
-      const response = await this.bridge.generate({ ...request, messages, tools });
+      const response = await this.bridge.generate({ ...request, messages, tools }, signal);
       lastResponse = response;
       messages.push(response.message);
 
@@ -70,7 +70,7 @@ export class ReasoningLoop {
         // Se acabó el presupuesto de pasos y el modelo seguía pidiendo
         // herramientas — una última llamada sin tools, para no dejar la
         // conversación colgada en una tool call sin respuesta final.
-        const final = await this.bridge.generate({ ...request, messages, tools: undefined });
+        const final = await this.bridge.generate({ ...request, messages, tools: undefined }, signal);
         return { ...final, reasoningSteps: step };
       }
     }
