@@ -216,7 +216,7 @@ function startChatServer() {
   wss.on("connection", (socket) => {
     log("Navigator conectado al chat FHS");
 
-    // DEC-0069: peticiones en vuelo por requestId — necesario para chat.cancel.
+    // DEC-0069: peticiones en vuelo por missionId — necesario para chat.cancel.
     const pending = new Map<string, AbortController>();
 
     socket.on("message", (raw) => {
@@ -241,22 +241,22 @@ async function handleMessage(
   raw: WebSocket.Data
 ) {
   try {
-    const msg = JSON.parse(raw.toString()) as { type?: string; requestId?: string };
+    const msg = JSON.parse(raw.toString()) as { type?: string; missionId?: string };
 
     // ── chat.cancel (DEC-0069): abortar loop de razonamiento en curso ──────
     if (msg.type === "chat.cancel") {
-      const ctrl = pending.get(msg.requestId ?? "");
+      const ctrl = pending.get(msg.missionId ?? "");
       if (ctrl) {
         ctrl.abort();
-        pending.delete(msg.requestId!);
+        pending.delete(msg.missionId!);
         const cancelledMsg: ChatErrorMessage = {
           type: "chat.error",
-          requestId: msg.requestId!,
+          missionId: msg.missionId!,
           code: FHS_ERROR_CODES.CANCELLED,
           message: "Petición cancelada por el invocador",
         };
         socket.send(JSON.stringify(cancelledMsg));
-        log(`chat.cancel ${msg.requestId} — loop de razonamiento abortado`);
+        log(`chat.cancel ${msg.missionId} — loop de razonamiento abortado`);
       }
       return;
     }
@@ -264,15 +264,15 @@ async function handleMessage(
     if (msg.type !== "chat.request") return;
 
     const req = msg as ChatRequestMessage;
-    log(`chat.request ${req.requestId}: model=${req.request.model}, maxReasoningSteps=${req.request.maxReasoningSteps ?? "(default " + MAX_REASONING_STEPS + ")"}`);
+    log(`chat.request ${req.missionId}: model=${req.request.model}, maxReasoningSteps=${req.request.maxReasoningSteps ?? "(default " + MAX_REASONING_STEPS + ")"}`);
 
     // DEC-0069: verificar CallerAuth si el invocador la envía.
     if (req.callerId && req.timestamp && req.signature) {
-      if (!verifySignature(req.callerId, invokeSignaturePayload(req.callerId, req.requestId, req.timestamp), req.signature)) {
+      if (!verifySignature(req.callerId, invokeSignaturePayload(req.callerId, req.missionId, req.timestamp), req.signature)) {
         log(`  → UNAUTHORIZED: firma de invocación inválida de ${req.callerId}`);
         const unauth: ChatErrorMessage = {
           type: "chat.error",
-          requestId: req.requestId,
+          missionId: req.missionId,
           code: FHS_ERROR_CODES.UNAUTHORIZED,
           message: "Firma de invocación inválida",
         };
@@ -282,14 +282,14 @@ async function handleMessage(
     }
 
     const ctrl = new AbortController();
-    pending.set(req.requestId, ctrl);
+    pending.set(req.missionId, ctrl);
 
     // Mosquito: confirmar que la petición ya está encolada. Un Nova puede
     // tardar bastante más que un Star (varias rondas) — el ack temprano
     // sigue siendo igual de importante para no dejar a Navigator a ciegas.
     const ack: DispatchAckMessage = {
       type: "dispatch.ack",
-      requestId: req.requestId,
+      missionId: req.missionId,
       queuedAt: Date.now(),
     };
     socket.send(JSON.stringify(ack));
@@ -300,7 +300,7 @@ async function handleMessage(
       log(`  → resuelto en ${response.reasoningSteps} ronda(s), ${Date.now() - startedAt}ms`);
       const completed: ChatCompletedMessage = {
         type: "chat.completed",
-        requestId: req.requestId,
+        missionId: req.missionId,
         response,
       };
       socket.send(JSON.stringify(completed));
@@ -310,20 +310,20 @@ async function handleMessage(
       console.error(`[fhs-nova] reasoning loop error:`, err);
       const errorMsg: ChatErrorMessage = {
         type: "chat.error",
-        requestId: req.requestId,
+        missionId: req.missionId,
         code: FHS_ERROR_CODES.UPSTREAM_UNAVAILABLE,
         message: err.message,
       };
       socket.send(JSON.stringify(errorMsg));
     } finally {
-      pending.delete(req.requestId);
+      pending.delete(req.missionId);
     }
   } catch (err: any) {
     log(`  → PARSE ERROR: ${err.message}`);
     console.error(`[fhs-nova] parse error:`, err);
     socket.send(JSON.stringify({
       type: "chat.error",
-      requestId: "unknown",
+      missionId: "unknown",
       code: FHS_ERROR_CODES.PARSE_ERROR,
       message: err.message,
     }));

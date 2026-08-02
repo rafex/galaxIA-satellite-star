@@ -254,23 +254,23 @@ function startToolServer() {
 
     socket.on("message", async (raw) => {
       try {
-        const msg = JSON.parse(raw.toString()) as { type?: string; requestId?: string };
+        const msg = JSON.parse(raw.toString()) as { type?: string; missionId?: string };
 
         // ── tool.cancel (DEC-0069) ──
         if (msg.type === "tool.cancel") {
-          const ctrl = pending.get(msg.requestId ?? "");
+          const ctrl = pending.get(msg.missionId ?? "");
           if (ctrl) {
             ctrl.abort();
-            pending.delete(msg.requestId!);
+            pending.delete(msg.missionId!);
             const cancelled: ToolCallErrorMessage = {
               type: "tool.error",
-              requestId: msg.requestId!,
+              missionId: msg.missionId!,
               toolName: "unknown",
               code: FHS_ERROR_CODES.CANCELLED,
               message: "Petición cancelada por el invocador",
             };
             socket.send(JSON.stringify(cancelled));
-            log(`tool.cancel ${msg.requestId}`);
+            log(`tool.cancel ${msg.missionId}`);
           }
           return;
         }
@@ -280,7 +280,7 @@ function startToolServer() {
           const req = msg as ToolListRequestMessage;
           const response: ToolListResponseMessage = {
             type: "tool.list.response",
-            requestId: req.requestId,
+            missionId: req.missionId,
             tools,
           };
           socket.send(JSON.stringify(response));
@@ -290,15 +290,15 @@ function startToolServer() {
         // ── tool.call ──
         if (msg.type === "tool.call") {
           const req = msg as ToolCallRequestMessage;
-          log(`tool.call ${req.requestId}: ${req.toolName}`);
+          log(`tool.call ${req.missionId}: ${req.toolName}`);
 
           // DEC-0069: verificar CallerAuth si el invocador la envía.
           if (req.callerId && req.timestamp && req.signature) {
-            if (!verifySignature(req.callerId, invokeSignaturePayload(req.callerId, req.requestId, req.timestamp), req.signature)) {
+            if (!verifySignature(req.callerId, invokeSignaturePayload(req.callerId, req.missionId, req.timestamp), req.signature)) {
               log(`  → UNAUTHORIZED: firma inválida de ${req.callerId}`);
               const unauth: ToolCallErrorMessage = {
                 type: "tool.error",
-                requestId: req.requestId,
+                missionId: req.missionId,
                 toolName: req.toolName,
                 code: FHS_ERROR_CODES.UNAUTHORIZED,
                 message: "Firma de invocación inválida",
@@ -309,12 +309,12 @@ function startToolServer() {
           }
 
           const ctrl = new AbortController();
-          pending.set(req.requestId, ctrl);
+          pending.set(req.missionId, ctrl);
 
           // Mosquito: confirmar que la petición ya está encolada.
           const ack: DispatchAckMessage = {
             type: "dispatch.ack",
-            requestId: req.requestId,
+            missionId: req.missionId,
             queuedAt: Date.now(),
           };
           socket.send(JSON.stringify(ack));
@@ -330,7 +330,7 @@ function startToolServer() {
               );
               const response: ToolCallResultMessage = {
                 type: "tool.result",
-                requestId: req.requestId,
+                missionId: req.missionId,
                 toolName: req.toolName,
                 content: [{ type: "text", text: JSON.stringify({ chunksIndexed }) }],
               };
@@ -343,7 +343,7 @@ function startToolServer() {
               );
               const response: ToolCallResultMessage = {
                 type: "tool.result",
-                requestId: req.requestId,
+                missionId: req.missionId,
                 toolName: req.toolName,
                 content: [{ type: "text", text: JSON.stringify({ chunks }) }],
               };
@@ -351,7 +351,7 @@ function startToolServer() {
             } else {
               const error: ToolCallErrorMessage = {
                 type: "tool.error",
-                requestId: req.requestId,
+                missionId: req.missionId,
                 toolName: req.toolName,
                 code: FHS_ERROR_CODES.UNSUPPORTED_CAPABILITY,
                 message: `Tool no soportada: ${req.toolName}`,
@@ -361,20 +361,20 @@ function startToolServer() {
           } catch (err: any) {
             const error: ToolCallErrorMessage = {
               type: "tool.error",
-              requestId: req.requestId,
+              missionId: req.missionId,
               toolName: req.toolName,
               code: FHS_ERROR_CODES.UPSTREAM_UNAVAILABLE,
               message: err.message,
             };
             socket.send(JSON.stringify(error));
           } finally {
-            pending.delete(req.requestId);
+            pending.delete(req.missionId);
           }
         }
       } catch (err: any) {
         socket.send(JSON.stringify({
           type: "tool.error",
-          requestId: "unknown",
+          missionId: "unknown",
           toolName: "unknown",
           code: FHS_ERROR_CODES.PARSE_ERROR,
           message: err.message,

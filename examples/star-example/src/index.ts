@@ -235,7 +235,7 @@ function startChatServer() {
   wss.on("connection", (socket) => {
     log("Agent Server conectado al chat FHS");
 
-    // DEC-0069: peticiones en vuelo por requestId — necesario para chat.cancel.
+    // DEC-0069: peticiones en vuelo por missionId — necesario para chat.cancel.
     const pending = new Map<string, AbortController>();
 
     socket.on("message", (raw) => {
@@ -261,22 +261,22 @@ async function handleMessage(
   raw: WebSocket.Data
 ) {
   try {
-    const msg = JSON.parse(raw.toString()) as { type?: string; requestId?: string };
+    const msg = JSON.parse(raw.toString()) as { type?: string; missionId?: string };
 
     // ── chat.cancel (DEC-0069): abortar inferencia en curso ────────────────
     if (msg.type === "chat.cancel") {
-      const ctrl = pending.get(msg.requestId ?? "");
+      const ctrl = pending.get(msg.missionId ?? "");
       if (ctrl) {
         ctrl.abort();
-        pending.delete(msg.requestId!);
+        pending.delete(msg.missionId!);
         const cancelledMsg: ChatErrorMessage = {
           type: "chat.error",
-          requestId: msg.requestId!,
+          missionId: msg.missionId!,
           code: FHS_ERROR_CODES.CANCELLED,
           message: "Petición cancelada por el invocador",
         };
         socket.send(JSON.stringify(cancelledMsg));
-        log(`chat.cancel ${msg.requestId} — inferencia abortada`);
+        log(`chat.cancel ${msg.missionId} — inferencia abortada`);
       }
       return;
     }
@@ -284,18 +284,18 @@ async function handleMessage(
     if (msg.type !== "chat.request") return;
 
     const req = msg as ChatRequestMessage;
-    log(`chat.request ${req.requestId}: model=${req.request.model}, stream=${req.request.stream}`);
+    log(`chat.request ${req.missionId}: model=${req.request.model}, stream=${req.request.stream}`);
     log(`  tools=${req.request.tools ? req.request.tools.length : 0}, messages=${req.request.messages?.length || 0}`);
 
     // DEC-0069: verificar CallerAuth si el invocador la envía.
     // Solo rechaza si las credenciales están presentes pero son inválidas —
     // llamadas anónimas se aceptan para compatibilidad hacia atrás.
     if (req.callerId && req.timestamp && req.signature) {
-      if (!verifySignature(req.callerId, invokeSignaturePayload(req.callerId, req.requestId, req.timestamp), req.signature)) {
+      if (!verifySignature(req.callerId, invokeSignaturePayload(req.callerId, req.missionId, req.timestamp), req.signature)) {
         log(`  → UNAUTHORIZED: firma de invocación inválida de ${req.callerId}`);
         const unauth: ChatErrorMessage = {
           type: "chat.error",
-          requestId: req.requestId,
+          missionId: req.missionId,
           code: FHS_ERROR_CODES.UNAUTHORIZED,
           message: "Firma de invocación inválida",
         };
@@ -305,12 +305,12 @@ async function handleMessage(
     }
 
     const ctrl = new AbortController();
-    pending.set(req.requestId, ctrl);
+    pending.set(req.missionId, ctrl);
 
     // Mosquito: confirmar que la petición ya está encolada.
     const ack: DispatchAckMessage = {
       type: "dispatch.ack",
-      requestId: req.requestId,
+      missionId: req.missionId,
       queuedAt: Date.now(),
     };
     socket.send(JSON.stringify(ack));
@@ -324,7 +324,7 @@ async function handleMessage(
         while (!result.done) {
           const deltaMsg: ChatDeltaMessage = {
             type: "chat.delta",
-            requestId: req.requestId,
+            missionId: req.missionId,
             delta: result.value,
           };
           socket.send(JSON.stringify(deltaMsg));
@@ -334,7 +334,7 @@ async function handleMessage(
         log(`  → stream completado`);
         const completed: ChatCompletedMessage = {
           type: "chat.completed",
-          requestId: req.requestId,
+          missionId: req.missionId,
           response: result.value,
         };
         socket.send(JSON.stringify(completed));
@@ -345,7 +345,7 @@ async function handleMessage(
         log(`  → bridge.generate() completado en ${Date.now() - startedAt}ms`);
         const completed: ChatCompletedMessage = {
           type: "chat.completed",
-          requestId: req.requestId,
+          missionId: req.missionId,
           response,
         };
         socket.send(JSON.stringify(completed));
@@ -358,20 +358,20 @@ async function handleMessage(
       console.error(`[fhs-llm] bridge error:`, err);
       const errorMsg: ChatErrorMessage = {
         type: "chat.error",
-        requestId: req.requestId,
+        missionId: req.missionId,
         code: FHS_ERROR_CODES.UPSTREAM_UNAVAILABLE,
         message: err.message,
       };
       socket.send(JSON.stringify(errorMsg));
     } finally {
-      pending.delete(req.requestId);
+      pending.delete(req.missionId);
     }
   } catch (err: any) {
     log(`  → PARSE ERROR: ${err.message}`);
     console.error(`[fhs-llm] parse error:`, err);
     socket.send(JSON.stringify({
       type: "chat.error",
-      requestId: "unknown",
+      missionId: "unknown",
       code: FHS_ERROR_CODES.PARSE_ERROR,
       message: err.message,
     }));
