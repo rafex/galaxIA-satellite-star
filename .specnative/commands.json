@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "commands": [
+    {
+      "name": "spec",
+      "description": "Enruta una solicitud por el flujo mínimo de SpecNative.",
+      "prompt": "Solicitud: $ARGUMENTS\n\nUsa el MCP de SpecNative. Lee AGENTS.md, llama resume() y status(), y elige el flujo mínimo correcto: start_initiative, capture_backlog, plan_tasks, implement_task, record_decision, record_architecture, record_convention, review_against_spec, close_initiative o checkpoint. No edites índices ni tableros generados."
+    },
+    {
+      "name": "spec-init",
+      "description": "Inicializa el contexto base del proyecto.",
+      "prompt": "Usa el MCP de SpecNative. Llama health_check(), entrevista al desarrollador y completa PRODUCT.md, STACK.md, ARCHITECTURE.md, CONVENTIONS.md y COMMANDS.md mediante refine_document() o update_section(). Termina indicando cómo iniciar la primera iniciativa."
+    },
+    {
+      "name": "spec-update",
+      "description": "Detecta y corrige vacíos de contexto.",
+      "prompt": "Usa el MCP de SpecNative. Llama health_check() y suggest_next(), muestra los vacíos y actualiza únicamente el artefacto canónico que el desarrollador confirme mediante refine_document() o update_section(). Vuelve a ejecutar health_check()."
+    },
+    {
+      "name": "spec-status",
+      "description": "Muestra estado, salud y siguiente acción del proyecto.",
+      "prompt": "Usa el MCP de SpecNative. Llama resume(), status(), board() y health_check(). Resume sesión activa, specs, tareas, bloqueos y la acción más urgente en un máximo de cinco líneas."
+    },
+    {
+      "name": "spec-handoff",
+      "description": "Guarda un traspaso verificable para el siguiente agente.",
+      "prompt": "Usa el MCP de SpecNative. Llama status() y resume(), recopila iniciativa, tarea, intención, siguiente paso y decisiones no registradas. Guarda checkpoint(); para cada decisión persistente usa log_decision(); confirma leyendo read_context('session')."
+    },
+    {
+      "name": "spec-backlog",
+      "description": "Muestra el tablero o captura una solicitud como tarea o idea.",
+      "prompt": "Argumentos: $ARGUMENTS\n\nUsa el MCP de SpecNative. Si no hay argumentos, llama board() y muestra el tablero derivado. Si hay una solicitud, llama list_specs() y board(); usa capture_backlog_item() con iniciativa solo si existe una spec y se proporcionan criterio de cierre y validación. En otro caso registra una idea en intake. No edites tableros generados."
+    },
+    {
+      "name": "spec-backlog-add",
+      "description": "Alias compatible de spec-backlog para capturar una solicitud.",
+      "prompt": "Este es un alias compatible de spec-backlog. Usa los argumentos proporcionados para capturar una tarea canónica o una idea triada siguiendo el flujo spec-backlog. No edites tableros generados."
+    },
+    {
+      "name": "spec-decision",
+      "description": "Registra una decisión persistente revisada.",
+      "prompt": "Solicitud: $ARGUMENTS\n\nUsa el MCP de SpecNative. Consulta list_decisions() y el contexto de arquitectura relacionado para evitar duplicados o contradicciones. Obtén contexto, decisión, consecuencias, tags y relaciones. Presenta un borrador y, tras confirmación, usa log_decision(). No registres detalles temporales de implementación."
+    },
+    {
+      "name": "spec-plan",
+      "description": "Convierte una spec aprobada en tareas verificables.",
+      "prompt": "Iniciativa: $ARGUMENTS\n\nUsa el prompt MCP plan_tasks para la iniciativa indicada. Lee la spec, decisiones y arquitectura; presenta las tareas con dependencias, criterio de cierre y validación antes de guardarlas."
+    },
+    {
+      "name": "spec-implement",
+      "description": "Implementa una tarea con contexto y evidencia de cierre.",
+      "prompt": "Tarea solicitada: $ARGUMENTS\n\nUsa el prompt MCP implement_task para la iniciativa y tarea indicadas. Carga solo el contexto relevante, cambia el estado a in_progress, ejecuta la validación y solo marca done mediante update_task() incluyendo completion_evidence con el comando y resultado observado. Si aparece un trade-off persistente, registra una decisión."
+    },
+    {
+      "name": "spec-review",
+      "description": "Revisa una iniciativa contra sus criterios de aceptación.",
+      "prompt": "Iniciativa: $ARGUMENTS\n\nUsa el prompt MCP review_against_spec. Comprueba cada criterio de aceptación contra evidencia y tareas, informa criterios cumplidos y no cumplidos, y recomienda aprobar, pedir cambios o bloquear."
+    },
+    {
+      "name": "spec-close",
+      "description": "Cierra una iniciativa con trazabilidad y validación.",
+      "prompt": "Iniciativa: $ARGUMENTS\n\nUsa el prompt MCP close_initiative. No cierres la spec hasta revisar criterios de aceptación, estado de tareas y evidencia. Actualiza trazabilidad, roadmap y sesión únicamente si corresponde."
+    },
+    {
+      "name": "spec-context",
+      "description": "Carga contexto mínimo por tag o ID de artefacto.",
+      "prompt": "Consulta: $ARGUMENTS\n\nUsa el MCP de SpecNative. Si se proporcionó un ID DEC-, ARCH- o CONV-, usa read_context_artifact(). Si se proporcionó un tag, consulta list_decisions(), list_architecture() y list_conventions() con ese tag, y lee solo los artefactos necesarios. Resume restricciones aplicables."
+    },
+    {
+      "name": "spec-architecture",
+      "description": "Registra un artefacto de arquitectura canónico.",
+      "prompt": "Solicitud: $ARGUMENTS\n\nUsa el MCP de SpecNative. Consulta list_architecture(), decisiones y specs relacionadas. Obtén contexto, diseño, consecuencias, tags y relaciones; presenta un borrador y, tras confirmación, usa log_architecture(). No edites ARCHITECTURE.md directamente."
+    },
+    {
+      "name": "spec-convention",
+      "description": "Registra una convención persistente y relacionable.",
+      "prompt": "Solicitud: $ARGUMENTS\n\nUsa el MCP de SpecNative. Consulta list_conventions() y artefactos relacionados. Obtén justificación, regla, consecuencias, tags y relaciones; presenta un borrador y, tras confirmación, usa log_convention(). No edites CONVENTIONS.md directamente."
+    }
+  ]
+}
