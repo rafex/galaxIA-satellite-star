@@ -21,7 +21,7 @@
     "@libp2p/kad-dht": "16.4.2",
     "@libp2p/peer-id": "6.0.14",
     "@libp2p/websockets": "10.1.19",
-    "@rafex/galaxia-fhs-protocol": "^0.1.24",
+    "@rafex/galaxia-fhs-protocol": "^0.1.26",
     "it-length-prefixed": "11.0.1",
     "libp2p": "3.3.8",
     "multiformats": "^13.3.1",
