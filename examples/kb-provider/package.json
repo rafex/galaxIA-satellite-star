@@ -1,9 +1,9 @@
 {
   "name": "@galaxia/kb-provider-example",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "KB Provider FHS — bases de conocimiento de solo lectura compartidas entre conversaciones (SPEC-KB-0001). El proceso de curaduría/indexado es responsabilidad exclusiva del operador (TASK-KB-0002) — este ejemplo solo carga una carpeta local al arrancar, no es una recomendación de workflow.",
+  "description": "KB Provider FHS P2P — bases de conocimiento compartidas (SPEC-KB-0001, DEC-0088). Corpus cargado al arrancar.",
   "scripts": {
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
@@ -11,13 +11,24 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@rafex/galaxia-fhs-protocol": "0.1.21",
-    "bonjour-service": "^1.4.2",
-    "ws": "^8.18.0"
+    "@chainsafe/libp2p-noise": "17.0.0",
+    "@chainsafe/libp2p-yamux": "8.0.1",
+    "@libp2p/crypto": "5.1.22",
+    "@libp2p/floodsub": "^11.0.28",
+    "@libp2p/identify": "^4.1.12",
+    "@libp2p/ping": "^3.1.11",
+    "@libp2p/interface": "^3.2.5",
+    "@libp2p/kad-dht": "16.4.2",
+    "@libp2p/peer-id": "6.0.14",
+    "@libp2p/websockets": "10.1.19",
+    "@rafex/galaxia-fhs-protocol": "^0.1.24",
+    "it-length-prefixed": "11.0.1",
+    "libp2p": "3.3.8",
+    "multiformats": "^13.3.1",
+    "uint8arrays": "6.1.1"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
-    "@types/ws": "^8.5.10",
     "tsx": "^4.15.0",
     "typescript": "^5.5.0"
   }

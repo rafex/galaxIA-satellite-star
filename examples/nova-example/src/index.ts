@@ -1,365 +1,279 @@
-import WebSocket, { WebSocketServer } from "ws";
-import { createServer as createHttpsServer } from "node:https";
-import { readFileSync } from "node:fs";
-import type {
-  NovaBeacon,
-  ChatRequestMessage,
-  ChatCompletedMessage,
-  ChatErrorMessage,
-  DispatchAckMessage,
-} from "@rafex/galaxia-fhs-protocol";
+#!/usr/bin/env node
+/**
+ * Nova Provider FHS P2P (DEC-0088, SPEC-NOVA-0001, DEC-0055).
+ * Ciclo completo: bootstrap → DHT beacon → FloodSub advertise →
+ * offer/bid/assign → stream directo con Navigator → ReasoningLoop → chat_completed.
+ *
+ * No hay WebSocket al Atlas, ni hello/register/ping (eliminados en DEC-0088).
+ * A diferencia del Star, el Nova no envía chat_delta — el loop de razonamiento
+ * no es streamable; envía un único chat_completed al terminar.
+ */
+
 import {
-  FHS_ERROR_CODES,
-  FHS_VERSION,
-  signPayload,
-  verifySignature,
-  helloSignaturePayload,
-  registerSignaturePayload,
-  welcomeSignaturePayload,
-  invokeSignaturePayload,
-} from "@rafex/galaxia-fhs-protocol";
+  FHS_STREAM_PROTOCOL,
+  TOPIC_NODES_ADVERTISE,
+  TOPIC_MISSIONS_OFFER,
+  TOPIC_MISSIONS_BID,
+  TOPIC_MISSIONS_ASSIGN,
+  type NodeAdvertiseMessage,
+  type MissionOfferMessage,
+  type MissionBidMessage,
+  type MissionAssignMessage,
+  type DhtBeaconRecord,
+  type HandshakeMessage,
+  type HandshakeAckMessage,
+  type ChatP2pRequestMessage,
+  type ChatP2pCompletedMessage,
+} from "./fhs-p2p-types.js";
+import { fromString, toString } from "uint8arrays";
+import {
+  loadOrCreateFhsIdentity,
+  createStarNode,
+  type FhsNode,
+  type FhsIdentity,
+} from "./p2p-node.js";
+import { sendEnvelope, decodeStream } from "./stream-codec.js";
 import { LlmBridge } from "./llm-bridge.js";
 import { ReasoningLoop } from "./reasoning-loop.js";
-import { loadOrCreateIdentity } from "./identity-store.js";
-import { discoverRegistryUrl } from "./registry-discovery.js";
-import { wsOptions } from "./ws-security.js";
 
-// SPEC-P2P-0001 (fase 1): sin REGISTRY_URL configurado (o = "auto"), se
-// intenta descubrir el Registry por mDNS en la LAN — fallback de
-// conveniencia, nunca obligatorio. REGISTRY_EXPECTED_DID (opcional) ancla
-// qué identidad de Registry se espera para esta comunidad (DEC-0032).
-const REGISTRY_URL_ENV = process.env.REGISTRY_URL;
-const USE_MDNS_DISCOVERY = !REGISTRY_URL_ENV || REGISTRY_URL_ENV === "auto";
-const REGISTRY_EXPECTED_DID = process.env.REGISTRY_EXPECTED_DID;
-let REGISTRY_URL = REGISTRY_URL_ENV && REGISTRY_URL_ENV !== "auto" ? REGISTRY_URL_ENV : "";
-const NOVA_PROVIDER_PORT = Number(process.env.NOVA_PROVIDER_PORT || 43113);
-const NOVA_PROVIDER_HOST = process.env.NOVA_PROVIDER_HOST || "localhost";
-// TLS opt-in (PoC, certificado autofirmado — ver docs/tls-autofirmado.md).
-const TLS_CERT_PATH = process.env.TLS_CERT_PATH;
-const TLS_KEY_PATH = process.env.TLS_KEY_PATH;
-const TLS_ENABLED = !!(TLS_CERT_PATH && TLS_KEY_PATH);
-const WS_SCHEME = TLS_ENABLED ? "wss" : "ws";
+// ── Configuración desde variables de entorno ──────────────────────────────────
 
-const LLAMA_CPP_URL = process.env.LLAMA_CPP_URL || "http://localhost:43110/v1";
-// DEC-0030: identidad Ed25519 real, persistida en disco — distinta de la de
-// star-example para poder correr ambos nodos a la vez sin colisionar.
-const IDENTITY_KEY_PATH = process.env.IDENTITY_KEY_PATH || "./.fhs-identity-nova.pem";
-const identity = loadOrCreateIdentity(IDENTITY_KEY_PATH);
-const PROVIDER_ID = identity.did;
-const PROVIDER_NAME = process.env.PROVIDER_NAME || "Nova de prueba (bastion-wifi)";
-const MODEL_ID = process.env.MODEL_ID || "qwen2.5-coder-3b-instruct";
-const MODEL_DISPLAY_NAME = process.env.MODEL_DISPLAY_NAME || "Qwen 2.5 Coder 3B Instruct";
-const MODEL_CONTEXT_WINDOW = Number(process.env.MODEL_CONTEXT_WINDOW || 4096);
-// Techo real de este Nova (SPEC-NOVA-0001, DEC-0055) — lo que declara en su
-// manifiesto y nunca excede, sin importar qué pida quien lo invoque.
-const MAX_REASONING_STEPS = Number(process.env.MAX_REASONING_STEPS || 3);
+const IDENTITY_KEY_PATH = process.env.IDENTITY_KEY_PATH ?? "./.fhs-identity-nova.json";
+const FHS_BOOTSTRAP_ADDRS = process.env.FHS_BOOTSTRAP_ADDRS
+  ? process.env.FHS_BOOTSTRAP_ADDRS.split(",").map((a) => a.trim())
+  : [];
+const FHS_LISTEN_ADDRS = process.env.FHS_LISTEN_ADDRS
+  ? process.env.FHS_LISTEN_ADDRS.split(",").map((a) => a.trim())
+  : ["/ip4/0.0.0.0/tcp/4004/ws"];
+const LLAMA_CPP_URL = process.env.LLAMA_CPP_URL ?? "http://localhost:43110/v1";
+const PROVIDER_NAME = process.env.PROVIDER_NAME ?? "Nova FHS";
+const MODEL_ID = process.env.MODEL_ID ?? "default";
+const MODEL_CONTEXT_WINDOW = Number(process.env.MODEL_CONTEXT_WINDOW ?? 4096);
+const MAX_REASONING_STEPS = Number(process.env.MAX_REASONING_STEPS ?? 3);
+const ADVERTISE_INTERVAL_MS = 30_000;
 
-const manifest: NovaBeacon = {
-  fhsVersion: "0.1",
-  provider: {
-    id: PROVIDER_ID,
-    name: PROVIDER_NAME,
-    type: "agent",
-    visibility: "community",
-  },
-  endpoint: {
-    protocol: "fhs",
-    url: `${WS_SCHEME}://${NOVA_PROVIDER_HOST}:${NOVA_PROVIDER_PORT}/fhs/v1/chat`,
-  },
-  // DEC-0013: obligatorio para cualquier provider — este de referencia no
-  // retiene nada del contenido de la conversación ni lo usa para entrenar.
-  privacy: {
-    retention: "none",
-    trainingUse: false,
-  },
-  models: [
-    {
-      id: MODEL_ID,
-      displayName: MODEL_DISPLAY_NAME,
-      capabilities: ["chat", "tool.calling"],
-      contextWindow: MODEL_CONTEXT_WINDOW,
-      toolCalling: { supported: true, mode: "native", formats: ["openai"] },
-    },
-  ],
-  reasoning: { maxSteps: MAX_REASONING_STEPS },
-  ...(process.env.NODE_INFO_CPU || process.env.NODE_INFO_RAM || process.env.NODE_INFO_GPU || process.env.NODE_INFO_LOCATION || process.env.NODE_INFO_DESCRIPTION ? {
-    nodeInfo: {
-      ...(process.env.NODE_INFO_CPU ? { cpu: process.env.NODE_INFO_CPU } : {}),
-      ...(process.env.NODE_INFO_RAM ? { ram: process.env.NODE_INFO_RAM } : {}),
-      ...(process.env.NODE_INFO_GPU ? { gpu: process.env.NODE_INFO_GPU } : {}),
-      ...(process.env.NODE_INFO_LOCATION ? { location: process.env.NODE_INFO_LOCATION } : {}),
-      ...(process.env.NODE_INFO_DESCRIPTION ? { description: process.env.NODE_INFO_DESCRIPTION } : {}),
-    },
-  } : {}),
-};
+// ── PubSub helpers ────────────────────────────────────────────────────────────
 
-const bridge = new LlmBridge(LLAMA_CPP_URL);
-const reasoningLoop = new ReasoningLoop(bridge, MAX_REASONING_STEPS);
-
-// ── Conexión al Registry FHS ──────────────────────────────────────────────
-
-function connectToRegistry() {
-  const ws = new WebSocket(REGISTRY_URL, wsOptions(REGISTRY_URL));
-
-  ws.on("open", () => {
-    log("Conectado al Registry, enviando hello...");
-    const helloTimestamp = Date.now();
-    ws.send(
-      JSON.stringify({
-        type: "hello",
-        providerId: PROVIDER_ID,
-        timestamp: helloTimestamp,
-        fhsVersion: FHS_VERSION,
-        signature: signPayload(identity.privateKey, helloSignaturePayload(PROVIDER_ID, helloTimestamp)),
-      })
-    );
-  });
-
-  ws.on("message", (data: WebSocket.Data) => {
-    const msg = JSON.parse(data.toString());
-
-    if (msg.type === "welcome") {
-      // Verifica que el welcome viene firmado por el Registry que dice ser
-      // (revisión del protocolo 2026-07-10) — protege contra un Atlas
-      // impostor en la misma LAN antes de entregarle el manifiesto.
-      if (
-        msg.registryId &&
-        msg.timestamp &&
-        msg.signature &&
-        !verifySignature(msg.registryId, welcomeSignaturePayload(msg.registryId, msg.timestamp), msg.signature)
-      ) {
-        log(`welcome con firma inválida de ${msg.registryId} — ignorando (¿Registry impostor?)`);
-        return;
-      }
-      log(`Registry dio welcome (lease: ${msg.leaseSeconds}s), registrando...`);
-      const registerTimestamp = Date.now();
-      ws.send(
-        JSON.stringify({
-          type: "register",
-          providerId: PROVIDER_ID,
-          manifest,
-          timestamp: registerTimestamp,
-          signature: signPayload(identity.privateKey, registerSignaturePayload(PROVIDER_ID, registerTimestamp, manifest)),
-        })
-      );
-    }
-
-    if (msg.type === "registered") {
-      log(`Registrado: ${msg.acceptedServices} servicio(s) aceptado(s)`);
-    }
-
-    if (msg.type === "error") {
-      // DEC-0009: el Registry rechaza el hello si el providerId ya tiene
-      // una conexión activa — no reintentar aquí, el "close" que sigue ya
-      // dispara el backoff de reconexión normal.
-      log(`Registry rechazó la conexión: ${msg.data?.code} — ${msg.data?.message}`);
-    }
-  });
-
-  ws.on("close", () => {
-    log("Conexión con Registry perdida, reintentando en 5s...");
-    setTimeout(connectToRegistry, 5000);
-  });
-
-  ws.on("error", (err) => {
-    log(`Error Registry: ${err.message}`);
-  });
-
-  const pingTimer = setInterval(() => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "ping" }));
-    }
-  }, 10_000);
-
-  const renewTimer = setInterval(() => {
-    if (ws.readyState === WebSocket.OPEN) {
-      const renewTimestamp = Date.now();
-      ws.send(
-        JSON.stringify({
-          type: "register",
-          providerId: PROVIDER_ID,
-          manifest,
-          timestamp: renewTimestamp,
-          signature: signPayload(identity.privateKey, registerSignaturePayload(PROVIDER_ID, renewTimestamp, manifest)),
-        })
-      );
-    }
-  }, 25_000);
-
-  ws.on("close", () => {
-    clearInterval(pingTimer);
-    clearInterval(renewTimer);
+function pubsubPublish(node: FhsNode, topic: string, msg: unknown): void {
+  const bytes = fromString(JSON.stringify(msg), "utf8");
+  (node.services.pubsub.publish(topic, bytes) as Promise<unknown>).catch((e: unknown) => {
+    console.error(`[pubsub] error en ${topic}:`, e);
   });
 }
 
-// ── Servidor FHS de Chat (donde Navigator se conecta) ──────────────────────
+function pubsubSubscribe(
+  node: FhsNode,
+  topic: string,
+  handler: (msg: unknown) => void
+): void {
+  node.services.pubsub.subscribe(topic);
+  node.services.pubsub.addEventListener(
+    "message",
+    (evt: { detail: { topic: string; data: Uint8Array } }) => {
+      if (evt.detail.topic !== topic) return;
+      try {
+        handler(JSON.parse(toString(evt.detail.data, "utf8")) as unknown);
+      } catch { /* ignorar frames malformados */ }
+    }
+  );
+}
 
-function startChatServer() {
-  let wss: WebSocketServer;
+// ── DHT helper ────────────────────────────────────────────────────────────────
 
-  if (TLS_ENABLED) {
-    const httpsServer = createHttpsServer({
-      cert: readFileSync(TLS_CERT_PATH!),
-      key: readFileSync(TLS_KEY_PATH!),
-    });
-    wss = new WebSocketServer({ server: httpsServer });
-    httpsServer.listen(NOVA_PROVIDER_PORT, () => {
-      log(`Chat server FHS escuchando en wss://localhost:${NOVA_PROVIDER_PORT}`);
-    });
-  } else {
-    wss = new WebSocketServer({ port: NOVA_PROVIDER_PORT });
-    wss.on("listening", () => {
-      log(`Chat server FHS escuchando en ws://localhost:${NOVA_PROVIDER_PORT}`);
-    });
+async function dhtPut(node: FhsNode, key: string, value: unknown): Promise<void> {
+  const keyBytes = fromString(key, "utf8");
+  const valueBytes = fromString(JSON.stringify(value), "utf8");
+  const signal = AbortSignal.timeout(5_000);
+  for await (const _ of node.services.dht.put(keyBytes, valueBytes, { signal })) {
+    void _;
   }
-
-  wss.on("connection", (socket) => {
-    log("Navigator conectado al chat FHS");
-
-    // DEC-0069: peticiones en vuelo por missionId — necesario para chat.cancel.
-    const pending = new Map<string, AbortController>();
-
-    socket.on("message", (raw) => {
-      void handleMessage(socket, pending, raw);
-    });
-
-    socket.on("close", () => {
-      log("Navigator desconectado del chat");
-      for (const ctrl of pending.values()) ctrl.abort();
-      pending.clear();
-    });
-
-    socket.on("error", (err) => {
-      log(`Error en socket de chat: ${err.message}`);
-    });
-  });
 }
 
-async function handleMessage(
-  socket: WebSocket,
-  pending: Map<string, AbortController>,
-  raw: WebSocket.Data
-) {
+// ── Manejo del stream directo Navigator → Nova ────────────────────────────────
+
+async function handleChatStream(
+  identity: FhsIdentity,
+  loop: ReasoningLoop,
+  stream: FhsNode
+): Promise<void> {
+  const messages = decodeStream(stream);
+
+  // 1. Leer Handshake del Navigator
+  const handshakeResult = await messages.next();
+  if (handshakeResult.done || handshakeResult.value.type !== "handshake") {
+    sendEnvelope(stream, "error", {
+      code: "INVALID_ARGUMENTS",
+      message: "esperaba handshake como primer mensaje",
+    });
+    return;
+  }
+  const handshake = handshakeResult.value.payload as HandshakeMessage;
+  console.log(`[stream] handshake de ${handshake.beacon ?? identity.did}`);
+
+  // 2. Responder HandshakeAck
+  const ack: HandshakeAckMessage = {
+    fhsVersion: "0.1",
+    leaseSeconds: 300,
+    heartbeatSeconds: 30,
+    leaseExpires: Date.now() + 300_000,
+    acceptedServices: 1,
+    trustLevel: "community",
+  };
+  sendEnvelope(stream, "handshake_ack", ack);
+
+  // 3. Leer ChatRequest
+  const reqResult = await messages.next();
+  if (reqResult.done || reqResult.value.type !== "chat_request") {
+    sendEnvelope(stream, "error", {
+      code: "INVALID_ARGUMENTS",
+      message: "esperaba chat_request",
+    });
+    return;
+  }
+  const req = reqResult.value.payload as ChatP2pRequestMessage;
+  console.log(`[mission] ${req.missionId} — nova razonamiento iniciado`);
+
+  // 4. Dispatch ack
+  sendEnvelope(stream, "dispatch_ack", {
+    missionId: req.missionId,
+    queuedAt: Date.now(),
+  });
+
+  // 5. Ejecutar reasoning loop (no streamable — resultado único al final)
+  const abortCtrl = new AbortController();
   try {
-    const msg = JSON.parse(raw.toString()) as { type?: string; missionId?: string };
-
-    // ── chat.cancel (DEC-0069): abortar loop de razonamiento en curso ──────
-    if (msg.type === "chat.cancel") {
-      const ctrl = pending.get(msg.missionId ?? "");
-      if (ctrl) {
-        ctrl.abort();
-        pending.delete(msg.missionId!);
-        const cancelledMsg: ChatErrorMessage = {
-          type: "chat.error",
-          missionId: msg.missionId!,
-          code: FHS_ERROR_CODES.CANCELLED,
-          message: "Petición cancelada por el invocador",
-        };
-        socket.send(JSON.stringify(cancelledMsg));
-        log(`chat.cancel ${msg.missionId} — loop de razonamiento abortado`);
-      }
-      return;
-    }
-
-    if (msg.type !== "chat.request") return;
-
-    const req = msg as ChatRequestMessage;
-    log(`chat.request ${req.missionId}: model=${req.request.model}, maxReasoningSteps=${req.request.maxReasoningSteps ?? "(default " + MAX_REASONING_STEPS + ")"}`);
-
-    // DEC-0069: verificar CallerAuth si el invocador la envía.
-    if (req.callerId && req.timestamp && req.signature) {
-      if (!verifySignature(req.callerId, invokeSignaturePayload(req.callerId, req.missionId, req.timestamp), req.signature)) {
-        log(`  → UNAUTHORIZED: firma de invocación inválida de ${req.callerId}`);
-        const unauth: ChatErrorMessage = {
-          type: "chat.error",
-          missionId: req.missionId,
-          code: FHS_ERROR_CODES.UNAUTHORIZED,
-          message: "Firma de invocación inválida",
-        };
-        socket.send(JSON.stringify(unauth));
-        return;
-      }
-    }
-
-    const ctrl = new AbortController();
-    pending.set(req.missionId, ctrl);
-
-    // Mosquito: confirmar que la petición ya está encolada. Un Nova puede
-    // tardar bastante más que un Star (varias rondas) — el ack temprano
-    // sigue siendo igual de importante para no dejar a Navigator a ciegas.
-    const ack: DispatchAckMessage = {
-      type: "dispatch.ack",
-      missionId: req.missionId,
-      queuedAt: Date.now(),
+    const generateRequest = {
+      model: req.model ?? MODEL_ID,
+      messages: req.messages as Parameters<typeof loop.run>[0]["messages"],
+      tools: req.tools as unknown as Parameters<typeof loop.run>[0]["tools"],
+      temperature: 0.7,
+      max_tokens: MODEL_CONTEXT_WINDOW,
     };
-    socket.send(JSON.stringify(ack));
 
-    try {
-      const startedAt = Date.now();
-      const response = await reasoningLoop.run(req.request, ctrl.signal);
-      log(`  → resuelto en ${response.reasoningSteps} ronda(s), ${Date.now() - startedAt}ms`);
-      const completed: ChatCompletedMessage = {
-        type: "chat.completed",
-        missionId: req.missionId,
-        response,
-      };
-      socket.send(JSON.stringify(completed));
-    } catch (err: any) {
-      if (err.name === "AbortError") { return; }
-      log(`  → ERROR: ${err.message}`);
-      console.error(`[fhs-nova] reasoning loop error:`, err);
-      const errorMsg: ChatErrorMessage = {
-        type: "chat.error",
-        missionId: req.missionId,
-        code: FHS_ERROR_CODES.UPSTREAM_UNAVAILABLE,
-        message: err.message,
-      };
-      socket.send(JSON.stringify(errorMsg));
-    } finally {
-      pending.delete(req.missionId);
-    }
-  } catch (err: any) {
-    log(`  → PARSE ERROR: ${err.message}`);
-    console.error(`[fhs-nova] parse error:`, err);
-    socket.send(JSON.stringify({
-      type: "chat.error",
-      missionId: "unknown",
-      code: FHS_ERROR_CODES.PARSE_ERROR,
-      message: err.message,
-    }));
+    const response = await loop.run(generateRequest, abortCtrl.signal);
+
+    const completed: ChatP2pCompletedMessage = {
+      missionId: req.missionId,
+      content: (response.message.content as string) ?? "",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      toolCalls: (response.toolCalls ?? []) as any,
+    };
+    sendEnvelope(stream, "chat_completed", completed);
+    console.log(
+      `[mission] ${req.missionId} completada — ${response.reasoningSteps ?? 1} paso(s) de razonamiento`
+    );
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    sendEnvelope(stream, "chat_error", { missionId: req.missionId, error: errMsg });
+    console.error(`[mission] ${req.missionId} error en reasoning loop:`, err);
   }
 }
 
-// ── Arranque ───────────────────────────────────────────────────────────────
+// ── Bootstrap + ciclo P2P ─────────────────────────────────────────────────────
 
-function log(message: string) {
-  const ts = new Date().toISOString().slice(11, 23);
-  console.log(`[fhs-nova ${ts}] ${message}`);
-}
+async function main(): Promise<void> {
+  const identity = await loadOrCreateFhsIdentity(IDENTITY_KEY_PATH);
+  console.log(`[nova] DID: ${identity.did}`);
 
-async function main() {
-  log(`Iniciando Nova FHS v${manifest.fhsVersion} (SPEC-NOVA-0001)`);
-  log(`  Provider : ${PROVIDER_NAME} (${PROVIDER_ID})`);
-  log(`  llama.cpp: ${LLAMA_CPP_URL}`);
-  log(`  Max steps: ${MAX_REASONING_STEPS}`);
-  log(`  Chat FHS : ${WS_SCHEME}://localhost:${NOVA_PROVIDER_PORT}`);
+  const node: FhsNode = await createStarNode({
+    identity,
+    listenAddrs: FHS_LISTEN_ADDRS,
+    bootstrapAddrs: FHS_BOOTSTRAP_ADDRS,
+  });
 
-  if (USE_MDNS_DISCOVERY) {
-    log("REGISTRY_URL no configurado — buscando Registry por mDNS...");
-    try {
-      const found = await discoverRegistryUrl(REGISTRY_EXPECTED_DID);
-      REGISTRY_URL = found.url;
-      log(`Registry encontrado por mDNS: ${REGISTRY_URL} (did: ${found.did})`);
-    } catch (err: any) {
-      log(`No se pudo autodescubrir el Registry: ${err.message}`);
-      process.exit(1);
-    }
-  } else {
-    log(`  Registry : ${REGISTRY_URL}`);
+  const multiaddrs = (): string[] =>
+    (node.getMultiaddrs() as Array<{ toString(): string }>).map((a) => a.toString());
+
+  console.log(`[nova] escuchando en: ${multiaddrs().join(", ")}`);
+  if (FHS_BOOTSTRAP_ADDRS.length === 0) {
+    console.warn("[nova] FHS_BOOTSTRAP_ADDRS no configurado — nodo aislado");
   }
 
-  connectToRegistry();
-  startChatServer();
+  // Esperar estabilización del DHT
+  await new Promise<void>((r) => setTimeout(r, 2_000));
+
+  // Publicar DhtBeaconRecord en KadDHT
+  const beaconPayload: DhtBeaconRecord = {
+    did: identity.did,
+    beacon: JSON.stringify({ type: "nova", name: PROVIDER_NAME, maxReasoningSteps: MAX_REASONING_STEPS }),
+    multiaddrs: multiaddrs(),
+    publishedAt: Date.now(),
+    expiresAt: Date.now() + 24 * 60 * 60 * 1_000,
+    fhsVersion: "0.1",
+    signature: new Uint8Array(0),
+  };
+  await dhtPut(node, `/fhs/beacon/${identity.did}`, beaconPayload).catch((e: unknown) => {
+    console.warn("[dht] error publicando beacon:", e);
+  });
+  console.log("[dht] beacon publicado");
+
+  const bridge = new LlmBridge(LLAMA_CPP_URL);
+  const loop = new ReasoningLoop(bridge, MAX_REASONING_STEPS);
+
+  // Anuncio FloodSub cada 30s
+  const advertise = (): void => {
+    const msg: NodeAdvertiseMessage = {
+      did: identity.did,
+      beacon: JSON.stringify({ type: "nova", name: PROVIDER_NAME }),
+      multiaddrs: multiaddrs(),
+      timestamp: Date.now(),
+      ttlSeconds: 60,
+      trustLevel: "community",
+      signature: new Uint8Array(0),
+    };
+    pubsubPublish(node, TOPIC_NODES_ADVERTISE, msg);
+  };
+  advertise();
+  const advertiseTimer = setInterval(advertise, ADVERTISE_INTERVAL_MS);
+
+  // Escuchar MissionOffer — ofertar si somos un Nova con capacidad "chat"
+  pubsubSubscribe(node, TOPIC_MISSIONS_OFFER, (raw) => {
+    const offer = raw as MissionOfferMessage;
+    if (!offer.missionId) return;
+    if (offer.missionType !== "chat") return;
+    if (!offer.requiredCapabilities?.includes("chat")) return;
+
+    const bid: MissionBidMessage = {
+      missionId: offer.missionId,
+      providerDid: identity.did,
+      providerMultiaddrs: multiaddrs(),
+      providerType: "nova",
+      offeredCapabilities: ["chat"],
+      offeredModel: MODEL_ID,
+      reputationScore: 0.5,
+      estimatedLatencyMs: 500,
+      trustLevel: "community",
+      timestamp: Date.now(),
+      signature: new Uint8Array(0),
+    };
+    pubsubPublish(node, TOPIC_MISSIONS_BID, bid);
+    console.log(`[bid] oferta enviada para mision ${offer.missionId}`);
+  });
+
+  // Escuchar MissionAssign — solo log; el Navigator abre el stream
+  pubsubSubscribe(node, TOPIC_MISSIONS_ASSIGN, (raw) => {
+    const assign = raw as MissionAssignMessage;
+    if (assign.assignedProvider === identity.did) {
+      console.log(`[assign] mision ${assign.missionId} asignada — esperando stream entrante`);
+    }
+  });
+
+  // Registrar handler para el protocolo de stream directo /fhs/v1/0.1.0
+  node.handle(FHS_STREAM_PROTOCOL, (stream: FhsNode) => {
+    console.log("[stream] conexion entrante de Navigator");
+    handleChatStream(identity, loop, stream).catch((e: unknown) => {
+      console.error("[stream] error no capturado:", e);
+    });
+  });
+
+  for (const sig of ["SIGTERM", "SIGINT"] as const) {
+    process.once(sig, () => {
+      clearInterval(advertiseTimer);
+      void (node.stop() as Promise<void>).then(() => process.exit(0));
+    });
+  }
+
+  console.log(`[nova] P2P activo — ${PROVIDER_NAME} (${MODEL_ID}, max ${MAX_REASONING_STEPS} pasos)`);
 }
 
-main();
+void main();

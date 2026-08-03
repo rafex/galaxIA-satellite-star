@@ -1,398 +1,332 @@
-import WebSocket, { WebSocketServer } from "ws";
-import { createServer as createHttpsServer } from "node:https";
-import { readFileSync } from "node:fs";
+#!/usr/bin/env node
+/**
+ * KB Provider FHS P2P (DEC-0088, SPEC-KB-0001).
+ * Ciclo completo: bootstrap → DHT beacon → FloodSub advertise →
+ * offer/bid/assign → stream directo con Navigator → tool_list / tool_call → tool_result.
+ *
+ * No hay WebSocket al Atlas, ni hello/register/ping (eliminados en DEC-0088).
+ * Tool expuesta: kb_query — el corpus se carga desde KB_CONTENT_DIR al arrancar.
+ */
+
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import type {
-  SatelliteBeacon,
-  ToolCallRequestMessage,
-  ToolCallResultMessage,
-  ToolCallErrorMessage,
-  ToolListRequestMessage,
-  ToolListResponseMessage,
-  DispatchAckMessage,
-} from "@rafex/galaxia-fhs-protocol";
 import {
-  FHS_ERROR_CODES,
-  FHS_VERSION,
-  signPayload,
-  verifySignature,
-  helloSignaturePayload,
-  registerSignaturePayload,
-  welcomeSignaturePayload,
-  invokeSignaturePayload,
-} from "@rafex/galaxia-fhs-protocol";
+  FHS_STREAM_PROTOCOL,
+  TOPIC_NODES_ADVERTISE,
+  TOPIC_MISSIONS_OFFER,
+  TOPIC_MISSIONS_BID,
+  TOPIC_MISSIONS_ASSIGN,
+  type NodeAdvertiseMessage,
+  type MissionOfferMessage,
+  type MissionBidMessage,
+  type MissionAssignMessage,
+  type DhtBeaconRecord,
+  type HandshakeMessage,
+  type HandshakeAckMessage,
+  type ToolP2pListRequestMessage,
+  type ToolP2pListResponseMessage,
+  type ToolP2pCallRequestMessage,
+  type ToolP2pCallResultMessage,
+  type ToolP2pCallErrorMessage,
+  type DispatchP2pAckMessage,
+  type P2pToolDefinition,
+} from "./fhs-p2p-types.js";
+import { fromString, toString } from "uint8arrays";
+import {
+  loadOrCreateFhsIdentity,
+  createStarNode,
+  type FhsNode,
+  type FhsIdentity,
+} from "./p2p-node.js";
+import { sendEnvelope, decodeStream } from "./stream-codec.js";
 import { KbBridge } from "./kb-bridge.js";
-import { loadOrCreateIdentity } from "./identity-store.js";
-import { discoverRegistryUrl } from "./registry-discovery.js";
-import { wsOptions } from "./ws-security.js";
 
-// SPEC-P2P-0001 (fase 1): sin REGISTRY_URL configurado (o = "auto"), se
-// intenta descubrir el Registry por mDNS en la LAN — fallback de
-// conveniencia, nunca obligatorio. REGISTRY_EXPECTED_DID (opcional) ancla
-// qué identidad de Registry se espera para esta comunidad (DEC-0032).
-const REGISTRY_URL_ENV = process.env.REGISTRY_URL;
-const USE_MDNS_DISCOVERY = !REGISTRY_URL_ENV || REGISTRY_URL_ENV === "auto";
-const REGISTRY_EXPECTED_DID = process.env.REGISTRY_EXPECTED_DID;
-let REGISTRY_URL = REGISTRY_URL_ENV && REGISTRY_URL_ENV !== "auto" ? REGISTRY_URL_ENV : "";
-const KB_PROVIDER_PORT = Number(process.env.KB_PROVIDER_PORT || 43114);
-const KB_PROVIDER_HOST = process.env.KB_PROVIDER_HOST || "localhost";
-// TASK-KB-0002: carpeta de contenido cargada al arrancar — mecanismo de
-// prueba mínimo, no un proceso de indexado recomendado (fuera del alcance
-// del protocolo, responsabilidad exclusiva del operador). Default relativo
-// al propio módulo (no a `process.cwd()`) para que funcione igual sin
-// importar desde dónde se invoque el proceso (dev con tsx desde la raíz
-// del repo, o `node dist/index.js` ya dentro de `examples/kb-provider/`).
+// ── Configuración desde variables de entorno ──────────────────────────────────
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const KB_CONTENT_DIR = process.env.KB_CONTENT_DIR || join(__dirname, "..", "content");
-// TASK-KB-0003: descripción y tags (DEC-0028) que el modo "recomendado" de
-// Navigator usa para decidir si esta KB coincide con una pregunta — deben
-// ser precisos y específicos, no genéricos.
+
+const IDENTITY_KEY_PATH = process.env.IDENTITY_KEY_PATH ?? "./.fhs-identity-kb.json";
+const FHS_BOOTSTRAP_ADDRS = process.env.FHS_BOOTSTRAP_ADDRS
+  ? process.env.FHS_BOOTSTRAP_ADDRS.split(",").map((a) => a.trim())
+  : [];
+const FHS_LISTEN_ADDRS = process.env.FHS_LISTEN_ADDRS
+  ? process.env.FHS_LISTEN_ADDRS.split(",").map((a) => a.trim())
+  : ["/ip4/0.0.0.0/tcp/4006/ws"];
+const KB_CONTENT_DIR = process.env.KB_CONTENT_DIR ?? join(__dirname, "..", "content");
+const PROVIDER_NAME = process.env.PROVIDER_NAME ?? "KB Provider FHS";
 const KB_DESCRIPTION =
-  process.env.KB_DESCRIPTION || "Constitución Política de los Estados Unidos Mexicanos, texto de ejemplo resumido";
-const KB_TAGS = (process.env.KB_TAGS || "constitucion,mexico,derechos humanos,ley").split(",").map((t) => t.trim());
-// TLS opt-in (PoC, certificado autofirmado — ver docs/tls-autofirmado.md).
-const TLS_CERT_PATH = process.env.TLS_CERT_PATH;
-const TLS_KEY_PATH = process.env.TLS_KEY_PATH;
-const TLS_ENABLED = !!(TLS_CERT_PATH && TLS_KEY_PATH);
-const WS_SCHEME = TLS_ENABLED ? "wss" : "ws";
+  process.env.KB_DESCRIPTION ?? "Constitución Política de los Estados Unidos Mexicanos";
+const ADVERTISE_INTERVAL_MS = 30_000;
 
-// DEC-0030: el providerId es un did:key real (Ed25519) derivado de una
-// identidad persistida en disco — ya no es un nombre elegido a mano.
-const IDENTITY_KEY_PATH = process.env.IDENTITY_KEY_PATH || "./.fhs-identity-kb.pem";
-const identity = loadOrCreateIdentity(IDENTITY_KEY_PATH);
-const PROVIDER_ID = identity.did;
-const PROVIDER_NAME = process.env.PROVIDER_NAME || "KB FHS Provider";
+// ── Definición de herramientas que ofrece este satellite ──────────────────────
 
-const manifest: SatelliteBeacon = {
-  fhsVersion: "0.1",
-  provider: {
-    id: PROVIDER_ID,
-    name: PROVIDER_NAME,
-    type: "mcp",
-    visibility: "community",
-  },
-  endpoint: {
-    protocol: "fhs",
-    url: `${WS_SCHEME}://${KB_PROVIDER_HOST}:${KB_PROVIDER_PORT}/fhs/v1/tools`,
-  },
-  // SPEC-KB-0001: solo lectura, sin TTL, sin warning (el operador decide
-  // qué es público, no el usuario — a diferencia de rag-provider).
-  privacy: {
-    retention: "permanent-readonly",
-  },
-  capabilities: [
-    {
-      id: "kb.query",
-      name: "Consulta de base de conocimiento",
-      description: KB_DESCRIPTION,
-      tags: KB_TAGS,
-      languages: ["es"],
-    },
-  ],
-  ...(process.env.NODE_INFO_CPU || process.env.NODE_INFO_RAM || process.env.NODE_INFO_GPU || process.env.NODE_INFO_LOCATION || process.env.NODE_INFO_DESCRIPTION ? {
-    nodeInfo: {
-      ...(process.env.NODE_INFO_CPU ? { cpu: process.env.NODE_INFO_CPU } : {}),
-      ...(process.env.NODE_INFO_RAM ? { ram: process.env.NODE_INFO_RAM } : {}),
-      ...(process.env.NODE_INFO_GPU ? { gpu: process.env.NODE_INFO_GPU } : {}),
-      ...(process.env.NODE_INFO_LOCATION ? { location: process.env.NODE_INFO_LOCATION } : {}),
-      ...(process.env.NODE_INFO_DESCRIPTION ? { description: process.env.NODE_INFO_DESCRIPTION } : {}),
-    },
-  } : {}),
-};
-
-const tools = [
+const KB_TOOLS: P2pToolDefinition[] = [
   {
     name: "kb_query",
-    description: "Consulta la base de conocimiento de este nodo por similitud.",
-    inputSchema: {
+    description: "Recupera fragmentos relevantes de la base de conocimiento estática.",
+    inputSchema: JSON.stringify({
       type: "object",
       properties: {
-        query: { type: "string", description: "Pregunta o texto de búsqueda" },
-        top_k: { type: "number", description: "Cuántos fragmentos devolver (default 3)" },
+        query: { type: "string", description: "Consulta en lenguaje natural." },
+        topK: { type: "number", description: "Número máximo de fragmentos. Default: 3." },
       },
       required: ["query"],
-    },
+    }),
   },
 ];
 
-const bridge = new KbBridge();
+// ── PubSub helpers ────────────────────────────────────────────────────────────
 
-// ── Conexión al Registry FHS ──────────────────────────────────────────────
-
-function connectToRegistry() {
-  const ws = new WebSocket(REGISTRY_URL, wsOptions(REGISTRY_URL));
-
-  ws.on("open", () => {
-    log("Conectado al Registry, enviando hello...");
-    const helloTimestamp = Date.now();
-    ws.send(
-      JSON.stringify({
-        type: "hello",
-        providerId: PROVIDER_ID,
-        timestamp: helloTimestamp,
-        fhsVersion: FHS_VERSION,
-        signature: signPayload(identity.privateKey, helloSignaturePayload(PROVIDER_ID, helloTimestamp)),
-      })
-    );
-  });
-
-  ws.on("message", (data: WebSocket.Data) => {
-    const msg = JSON.parse(data.toString());
-
-    if (msg.type === "welcome") {
-      // Verifica que el welcome viene firmado por el Registry que dice ser
-      // (revisión del protocolo 2026-07-10) — protege contra un Atlas
-      // impostor en la misma LAN antes de entregarle el manifiesto.
-      if (
-        msg.registryId &&
-        msg.timestamp &&
-        msg.signature &&
-        !verifySignature(msg.registryId, welcomeSignaturePayload(msg.registryId, msg.timestamp), msg.signature)
-      ) {
-        log(`welcome con firma inválida de ${msg.registryId} — ignorando (¿Registry impostor?)`);
-        return;
-      }
-      log(`Registry dio welcome (lease: ${msg.leaseSeconds}s), registrando...`);
-      const registerTimestamp = Date.now();
-      ws.send(
-        JSON.stringify({
-          type: "register",
-          providerId: PROVIDER_ID,
-          manifest,
-          timestamp: registerTimestamp,
-          signature: signPayload(identity.privateKey, registerSignaturePayload(PROVIDER_ID, registerTimestamp, manifest)),
-        })
-      );
-    }
-
-    if (msg.type === "registered") {
-      log(`Registrado: ${msg.acceptedServices} servicio(s) aceptado(s)`);
-    }
-
-    if (msg.type === "error") {
-      // DEC-0009: el Registry rechaza el hello si el providerId ya tiene
-      // una conexión activa — no reintentar aquí, el "close" que sigue ya
-      // dispara el backoff de reconexión normal.
-      log(`Registry rechazó la conexión: ${msg.data?.code} — ${msg.data?.message}`);
-    }
-  });
-
-  ws.on("close", () => {
-    log("Conexión con Registry perdida, reintentando en 5s...");
-    setTimeout(connectToRegistry, 5000);
-  });
-
-  ws.on("error", (err) => {
-    log(`Error Registry: ${err.message}`);
-  });
-
-  const pingTimer = setInterval(() => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "ping" }));
-    }
-  }, 10_000);
-
-  const renewTimer = setInterval(() => {
-    if (ws.readyState === WebSocket.OPEN) {
-      const renewTimestamp = Date.now();
-      ws.send(
-        JSON.stringify({
-          type: "register",
-          providerId: PROVIDER_ID,
-          manifest,
-          timestamp: renewTimestamp,
-          signature: signPayload(identity.privateKey, registerSignaturePayload(PROVIDER_ID, renewTimestamp, manifest)),
-        })
-      );
-    }
-  }, 25_000);
-
-  ws.on("close", () => {
-    clearInterval(pingTimer);
-    clearInterval(renewTimer);
+function pubsubPublish(node: FhsNode, topic: string, msg: unknown): void {
+  const bytes = fromString(JSON.stringify(msg), "utf8");
+  (node.services.pubsub.publish(topic, bytes) as Promise<unknown>).catch((e: unknown) => {
+    console.error(`[pubsub] error en ${topic}:`, e);
   });
 }
 
-// ── Servidor FHS de Tools (donde Navigator se conecta) ────────────────────
-
-function startToolServer() {
-  let wss: WebSocketServer;
-
-  if (TLS_ENABLED) {
-    const httpsServer = createHttpsServer({
-      cert: readFileSync(TLS_CERT_PATH!),
-      key: readFileSync(TLS_KEY_PATH!),
-    });
-    wss = new WebSocketServer({ server: httpsServer });
-    httpsServer.listen(KB_PROVIDER_PORT, () => {
-      log(`Tool server FHS escuchando en wss://localhost:${KB_PROVIDER_PORT}`);
-    });
-  } else {
-    wss = new WebSocketServer({ port: KB_PROVIDER_PORT });
-    wss.on("listening", () => {
-      log(`Tool server FHS escuchando en ws://localhost:${KB_PROVIDER_PORT}`);
-    });
-  }
-
-  wss.on("connection", (socket) => {
-    log("Navigator conectado al tool server FHS");
-
-    // DEC-0069: peticiones en vuelo — kb-bridge es síncrono/en-memoria,
-    // tool.cancel llega casi siempre tras la completion; se maneja igual
-    // para coherencia de protocolo.
-    const pending = new Map<string, AbortController>();
-
-    socket.on("message", async (raw) => {
+function pubsubSubscribe(
+  node: FhsNode,
+  topic: string,
+  handler: (msg: unknown) => void
+): void {
+  node.services.pubsub.subscribe(topic);
+  node.services.pubsub.addEventListener(
+    "message",
+    (evt: { detail: { topic: string; data: Uint8Array } }) => {
+      if (evt.detail.topic !== topic) return;
       try {
-        const msg = JSON.parse(raw.toString()) as { type?: string; missionId?: string };
-
-        // ── tool.cancel (DEC-0069) ──
-        if (msg.type === "tool.cancel") {
-          const ctrl = pending.get(msg.missionId ?? "");
-          if (ctrl) {
-            ctrl.abort();
-            pending.delete(msg.missionId!);
-            const cancelled: ToolCallErrorMessage = {
-              type: "tool.error",
-              missionId: msg.missionId!,
-              toolName: "unknown",
-              code: FHS_ERROR_CODES.CANCELLED,
-              message: "Petición cancelada por el invocador",
-            };
-            socket.send(JSON.stringify(cancelled));
-            log(`tool.cancel ${msg.missionId}`);
-          }
-          return;
-        }
-
-        // ── tool.list ──
-        if (msg.type === "tool.list") {
-          const req = msg as ToolListRequestMessage;
-          const response: ToolListResponseMessage = {
-            type: "tool.list.response",
-            missionId: req.missionId,
-            tools,
-          };
-          socket.send(JSON.stringify(response));
-          return;
-        }
-
-        // ── tool.call ──
-        if (msg.type === "tool.call") {
-          const req = msg as ToolCallRequestMessage;
-          log(`tool.call ${req.missionId}: ${req.toolName}`);
-
-          // DEC-0069: verificar CallerAuth si el invocador la envía.
-          if (req.callerId && req.timestamp && req.signature) {
-            if (!verifySignature(req.callerId, invokeSignaturePayload(req.callerId, req.missionId, req.timestamp), req.signature)) {
-              log(`  → UNAUTHORIZED: firma inválida de ${req.callerId}`);
-              const unauth: ToolCallErrorMessage = {
-                type: "tool.error",
-                missionId: req.missionId,
-                toolName: req.toolName,
-                code: FHS_ERROR_CODES.UNAUTHORIZED,
-                message: "Firma de invocación inválida",
-              };
-              socket.send(JSON.stringify(unauth));
-              return;
-            }
-          }
-
-          const ctrl = new AbortController();
-          pending.set(req.missionId, ctrl);
-
-          // Mosquito: confirmar que la petición ya está encolada.
-          const ack: DispatchAckMessage = {
-            type: "dispatch.ack",
-            missionId: req.missionId,
-            queuedAt: Date.now(),
-          };
-          socket.send(JSON.stringify(ack));
-
-          try {
-            if (req.toolName === "kb_query") {
-              const chunks = bridge.query(String(req.arguments.query ?? ""), Number(req.arguments.top_k) || undefined);
-              const response: ToolCallResultMessage = {
-                type: "tool.result",
-                missionId: req.missionId,
-                toolName: req.toolName,
-                content: [{ type: "text", text: JSON.stringify({ chunks }) }],
-              };
-              socket.send(JSON.stringify(response));
-            } else {
-              const error: ToolCallErrorMessage = {
-                type: "tool.error",
-                missionId: req.missionId,
-                toolName: req.toolName,
-                code: FHS_ERROR_CODES.UNSUPPORTED_CAPABILITY,
-                message: `Tool no soportada: ${req.toolName}`,
-              };
-              socket.send(JSON.stringify(error));
-            }
-          } catch (err: any) {
-            const error: ToolCallErrorMessage = {
-              type: "tool.error",
-              missionId: req.missionId,
-              toolName: req.toolName,
-              code: FHS_ERROR_CODES.UPSTREAM_UNAVAILABLE,
-              message: err.message,
-            };
-            socket.send(JSON.stringify(error));
-          } finally {
-            pending.delete(req.missionId);
-          }
-        }
-      } catch (err: any) {
-        socket.send(JSON.stringify({
-          type: "tool.error",
-          missionId: "unknown",
-          toolName: "unknown",
-          code: FHS_ERROR_CODES.PARSE_ERROR,
-          message: err.message,
-        }));
-      }
-    });
-
-    socket.on("close", () => {
-      log("Navigator desconectado del tool server");
-      for (const ctrl of pending.values()) ctrl.abort();
-      pending.clear();
-    });
-  });
-}
-
-// ── Arranque ───────────────────────────────────────────────────────────────
-
-function log(message: string) {
-  const ts = new Date().toISOString().slice(11, 23);
-  console.log(`[fhs-kb ${ts}] ${message}`);
-}
-
-async function main() {
-  log(`Iniciando KB Provider FHS v${manifest.fhsVersion}`);
-  log(`  Provider : ${PROVIDER_NAME} (${PROVIDER_ID})`);
-  log(`  Contenido: ${KB_CONTENT_DIR}`);
-  const chunks = bridge.loadContentDirectory(KB_CONTENT_DIR);
-  log(`  ${chunks} fragmento(s) cargado(s)`);
-  log(`  Tools FHS: ${WS_SCHEME}://localhost:${KB_PROVIDER_PORT}`);
-
-  if (USE_MDNS_DISCOVERY) {
-    log("REGISTRY_URL no configurado — buscando Registry por mDNS...");
-    try {
-      const found = await discoverRegistryUrl(REGISTRY_EXPECTED_DID);
-      REGISTRY_URL = found.url;
-      log(`Registry encontrado por mDNS: ${REGISTRY_URL} (did: ${found.did})`);
-    } catch (err: any) {
-      log(`No se pudo autodescubrir el Registry: ${err.message}`);
-      process.exit(1);
+        handler(JSON.parse(toString(evt.detail.data, "utf8")) as unknown);
+      } catch { /* ignorar frames malformados */ }
     }
-  } else {
-    log(`  Registry : ${REGISTRY_URL}`);
+  );
+}
+
+// ── DHT helper ────────────────────────────────────────────────────────────────
+
+async function dhtPut(node: FhsNode, key: string, value: unknown): Promise<void> {
+  const keyBytes = fromString(key, "utf8");
+  const valueBytes = fromString(JSON.stringify(value), "utf8");
+  const signal = AbortSignal.timeout(5_000);
+  for await (const _ of node.services.dht.put(keyBytes, valueBytes, { signal })) {
+    void _;
+  }
+}
+
+// ── Manejo del stream directo Navigator → KB Satellite ───────────────────────
+
+async function handleToolStream(
+  identity: FhsIdentity,
+  bridge: KbBridge,
+  stream: FhsNode
+): Promise<void> {
+  const messages = decodeStream(stream);
+
+  // 1. Leer Handshake del Navigator
+  const handshakeResult = await messages.next();
+  if (handshakeResult.done || handshakeResult.value.type !== "handshake") {
+    sendEnvelope(stream, "error", {
+      code: "INVALID_ARGUMENTS",
+      message: "esperaba handshake como primer mensaje",
+    });
+    return;
+  }
+  const handshake = handshakeResult.value.payload as HandshakeMessage;
+  console.log(`[stream] handshake de ${handshake.beacon ?? identity.did}`);
+
+  // 2. Responder HandshakeAck
+  const ack: HandshakeAckMessage = {
+    fhsVersion: "0.1",
+    leaseSeconds: 300,
+    heartbeatSeconds: 30,
+    leaseExpires: Date.now() + 300_000,
+    acceptedServices: 1,
+    trustLevel: "community",
+  };
+  sendEnvelope(stream, "handshake_ack", ack);
+
+  // 3. Loop de mensajes: tool_list y/o tool_call
+  while (true) {
+    const frame = await messages.next();
+    if (frame.done) break;
+
+    const { type, payload } = frame.value;
+
+    if (type === "tool_list") {
+      const req = payload as ToolP2pListRequestMessage;
+      console.log(`[mission] ${req.missionId} — tool_list solicitado`);
+
+      const resp: ToolP2pListResponseMessage = {
+        missionId: req.missionId,
+        tools: KB_TOOLS,
+      };
+      sendEnvelope(stream, "tool_list_resp", resp);
+      continue;
+    }
+
+    if (type === "tool_call") {
+      const req = payload as ToolP2pCallRequestMessage;
+      console.log(`[mission] ${req.missionId} — ${req.toolCalls.length} tool_call(s)`);
+
+      const dispatchAck: DispatchP2pAckMessage = {
+        missionId: req.missionId,
+        queuedAt: Date.now(),
+      };
+      sendEnvelope(stream, "dispatch_ack", dispatchAck);
+
+      for (const call of req.toolCalls) {
+        try {
+          if (call.function.name !== "kb_query") {
+            const errMsg: ToolP2pCallErrorMessage = {
+              missionId: req.missionId,
+              toolCallId: call.id,
+              error: `Herramienta desconocida: ${call.function.name}`,
+            };
+            sendEnvelope(stream, "tool_error", errMsg);
+            continue;
+          }
+
+          const args = JSON.parse(call.function.arguments) as { query: string; topK?: number };
+          const query = String(args.query ?? "");
+          const topK = typeof args.topK === "number" ? args.topK : 3;
+          const chunks = bridge.query(query, topK);
+
+          const successMsg: ToolP2pCallResultMessage = {
+            missionId: req.missionId,
+            toolCallId: call.id,
+            result: JSON.stringify(chunks),
+          };
+          sendEnvelope(stream, "tool_result", successMsg);
+          console.log(`[mission] ${req.missionId}/${call.id} — ${chunks.length} fragmentos de KB`);
+        } catch (err) {
+          const errMsg: ToolP2pCallErrorMessage = {
+            missionId: req.missionId,
+            toolCallId: call.id,
+            error: err instanceof Error ? err.message : String(err),
+          };
+          sendEnvelope(stream, "tool_error", errMsg);
+          console.error(`[mission] ${req.missionId}/${call.id} error:`, err);
+        }
+      }
+      continue;
+    }
+
+    sendEnvelope(stream, "error", {
+      code: "INVALID_ARGUMENTS",
+      message: `tipo de mensaje inesperado: ${type}`,
+    });
+    break;
+  }
+}
+
+// ── Bootstrap + ciclo P2P ─────────────────────────────────────────────────────
+
+async function main(): Promise<void> {
+  const identity = await loadOrCreateFhsIdentity(IDENTITY_KEY_PATH);
+  console.log(`[kb] DID: ${identity.did}`);
+
+  const node: FhsNode = await createStarNode({
+    identity,
+    listenAddrs: FHS_LISTEN_ADDRS,
+    bootstrapAddrs: FHS_BOOTSTRAP_ADDRS,
+  });
+
+  const multiaddrs = (): string[] =>
+    (node.getMultiaddrs() as Array<{ toString(): string }>).map((a) => a.toString());
+
+  console.log(`[kb] escuchando en: ${multiaddrs().join(", ")}`);
+  if (FHS_BOOTSTRAP_ADDRS.length === 0) {
+    console.warn("[kb] FHS_BOOTSTRAP_ADDRS no configurado — nodo aislado");
   }
 
-  connectToRegistry();
+  // Esperar estabilización del DHT
+  await new Promise<void>((r) => setTimeout(r, 2_000));
+
+  // Cargar corpus al arrancar (TASK-KB-0002)
+  const bridge = new KbBridge();
+  const loaded = bridge.loadContentDirectory(KB_CONTENT_DIR);
+  console.log(`[kb] corpus cargado: ${loaded} chunks de ${KB_CONTENT_DIR}`);
+
+  const beaconObj = {
+    type: "satellite",
+    name: PROVIDER_NAME,
+    description: KB_DESCRIPTION,
+    capabilities: ["knowledge.query"],
+    tools: KB_TOOLS.map((t) => t.name),
+  };
+
+  const beaconPayload: DhtBeaconRecord = {
+    did: identity.did,
+    beacon: JSON.stringify(beaconObj),
+    multiaddrs: multiaddrs(),
+    publishedAt: Date.now(),
+    expiresAt: Date.now() + 24 * 60 * 60 * 1_000,
+    fhsVersion: "0.1",
+    signature: new Uint8Array(0),
+  };
+  await dhtPut(node, `/fhs/beacon/${identity.did}`, beaconPayload).catch((e: unknown) => {
+    console.warn("[dht] error publicando beacon:", e);
+  });
+  console.log("[dht] beacon publicado");
+
+  const advertise = (): void => {
+    const msg: NodeAdvertiseMessage = {
+      did: identity.did,
+      beacon: JSON.stringify(beaconObj),
+      multiaddrs: multiaddrs(),
+      timestamp: Date.now(),
+      ttlSeconds: 60,
+      trustLevel: "community",
+      signature: new Uint8Array(0),
+    };
+    pubsubPublish(node, TOPIC_NODES_ADVERTISE, msg);
+  };
+  advertise();
+  const advertiseTimer = setInterval(advertise, ADVERTISE_INTERVAL_MS);
+
+  pubsubSubscribe(node, TOPIC_MISSIONS_OFFER, (raw) => {
+    const offer = raw as MissionOfferMessage;
+    if (!offer.missionId) return;
+    if (offer.missionType !== "tool_call") return;
+    if (!offer.requiredCapabilities?.includes("knowledge.query")) return;
+
+    const bid: MissionBidMessage = {
+      missionId: offer.missionId,
+      providerDid: identity.did,
+      providerMultiaddrs: multiaddrs(),
+      providerType: "satellite",
+      offeredCapabilities: ["knowledge.query"],
+      reputationScore: 0.5,
+      estimatedLatencyMs: 50,
+      trustLevel: "community",
+      timestamp: Date.now(),
+      signature: new Uint8Array(0),
+    };
+    pubsubPublish(node, TOPIC_MISSIONS_BID, bid);
+    console.log(`[bid] oferta enviada para mision ${offer.missionId}`);
+  });
+
+  pubsubSubscribe(node, TOPIC_MISSIONS_ASSIGN, (raw) => {
+    const assign = raw as MissionAssignMessage;
+    if (assign.assignedProvider === identity.did) {
+      console.log(`[assign] mision ${assign.missionId} asignada — esperando stream entrante`);
+    }
+  });
+
+  node.handle(FHS_STREAM_PROTOCOL, (stream: FhsNode) => {
+    console.log("[stream] conexion entrante de Navigator");
+    handleToolStream(identity, bridge, stream).catch((e: unknown) => {
+      console.error("[stream] error no capturado:", e);
+    });
+  });
+
+  for (const sig of ["SIGTERM", "SIGINT"] as const) {
+    process.once(sig, () => {
+      clearInterval(advertiseTimer);
+      void (node.stop() as Promise<void>).then(() => process.exit(0));
+    });
+  }
+
+  console.log(`[kb] P2P activo — ${PROVIDER_NAME} (${loaded} chunks listos)`);
 }
 
-main();
-startToolServer();
+void main();
