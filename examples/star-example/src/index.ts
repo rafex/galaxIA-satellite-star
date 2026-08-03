@@ -1,412 +1,298 @@
-import WebSocket, { WebSocketServer } from "ws";
-import { createServer as createHttpsServer } from "node:https";
-import { readFileSync } from "node:fs";
-import type {
-  StarBeacon,
-  ChatRequestMessage,
-  ChatDeltaMessage,
-  ChatCompletedMessage,
-  ChatErrorMessage,
-  DispatchAckMessage,
-} from "@rafex/galaxia-fhs-protocol";
+#!/usr/bin/env node
+/**
+ * Star Provider FHS P2P (DEC-0088).
+ * Ciclo completo: bootstrap → DHT beacon → FloodSub advertise →
+ * offer/bid/assign → stream directo con Navigator → LLM → deltas.
+ *
+ * No hay WebSocket al Atlas, ni hello/register/ping (eliminados en DEC-0088).
+ */
+
 import {
-  FHS_ERROR_CODES,
-  FHS_VERSION,
-  signPayload,
-  verifySignature,
-  helloSignaturePayload,
-  registerSignaturePayload,
-  welcomeSignaturePayload,
-  invokeSignaturePayload,
-} from "@rafex/galaxia-fhs-protocol";
+  FHS_STREAM_PROTOCOL,
+  TOPIC_NODES_ADVERTISE,
+  TOPIC_MISSIONS_OFFER,
+  TOPIC_MISSIONS_BID,
+  TOPIC_MISSIONS_ASSIGN,
+  type NodeAdvertiseMessage,
+  type MissionOfferMessage,
+  type MissionBidMessage,
+  type MissionAssignMessage,
+  type DhtBeaconRecord,
+  type HandshakeMessage,
+  type HandshakeAckMessage,
+  type ChatP2pRequestMessage,
+  type ChatP2pDeltaMessage,
+  type ChatP2pCompletedMessage,
+} from "./fhs-p2p-types.js";
+import { fromString, toString } from "uint8arrays";
+import {
+  loadOrCreateFhsIdentity,
+  createStarNode,
+  type FhsNode,
+  type FhsIdentity,
+} from "./p2p-node.js";
+import { sendEnvelope, decodeStream } from "./stream-codec.js";
 import { LlmBridge } from "./llm-bridge.js";
-import { loadOrCreateIdentity } from "./identity-store.js";
-import { discoverRegistryUrl } from "./registry-discovery.js";
-import { wsOptions } from "./ws-security.js";
 
-// SPEC-P2P-0001 (fase 1): sin REGISTRY_URL configurado (o = "auto"), se
-// intenta descubrir el Registry por mDNS en la LAN — fallback de
-// conveniencia, nunca obligatorio. REGISTRY_EXPECTED_DID (opcional) ancla
-// qué identidad de Registry se espera para esta comunidad (DEC-0032).
-const REGISTRY_URL_ENV = process.env.REGISTRY_URL;
-const USE_MDNS_DISCOVERY = !REGISTRY_URL_ENV || REGISTRY_URL_ENV === "auto";
-const REGISTRY_EXPECTED_DID = process.env.REGISTRY_EXPECTED_DID;
-let REGISTRY_URL = REGISTRY_URL_ENV && REGISTRY_URL_ENV !== "auto" ? REGISTRY_URL_ENV : "";
-const LLM_PROVIDER_PORT = Number(process.env.LLM_PROVIDER_PORT || 43111);
-const LLM_PROVIDER_HOST =
-  process.env.LLM_PROVIDER_HOST || "localhost";
-// TLS opt-in (PoC, certificado autofirmado — ver docs/tls-autofirmado.md):
-// si están seteados, el provider expone wss:// para su servidor de chat y
-// se anuncia como tal en el manifiesto.
-const TLS_CERT_PATH = process.env.TLS_CERT_PATH;
-const TLS_KEY_PATH = process.env.TLS_KEY_PATH;
-const TLS_ENABLED = !!(TLS_CERT_PATH && TLS_KEY_PATH);
-const WS_SCHEME = TLS_ENABLED ? "wss" : "ws";
+// ── Configuración desde variables de entorno ──────────────────────────────────
 
-const LLAMA_CPP_URL =
-  process.env.LLAMA_CPP_URL || "http://localhost:43110/v1";
-// DEC-0030: el providerId es un did:key real (Ed25519) derivado de una
-// identidad persistida en disco — ya no es un nombre elegido a mano. Se
-// genera la primera vez que arranca el provider y se reutiliza después.
-const IDENTITY_KEY_PATH = process.env.IDENTITY_KEY_PATH || "./.fhs-identity-llm.pem";
-const identity = loadOrCreateIdentity(IDENTITY_KEY_PATH);
-const PROVIDER_ID = identity.did;
-const PROVIDER_NAME =
-  process.env.PROVIDER_NAME || "Mac mini de Ra\u00FAl";
-const MODEL_ID =
-  process.env.MODEL_ID || "qwen2.5-coder-3b-instruct";
-const MODEL_DISPLAY_NAME =
-  process.env.MODEL_DISPLAY_NAME || "Qwen 2.5 Coder 3B Instruct";
-const MODEL_CONTEXT_WINDOW = Number(process.env.MODEL_CONTEXT_WINDOW || 4096);
-// El modelo actual (Qwen2.5 v\u00EDa --jinja en llama-server) no siempre llena el
-// campo tool_calls nativo \u2014 LlmBridge tiene un fallback que parsea la llamada
-// desde `content` cuando esto pasa. Ver examples/star-example/src/llm-bridge.ts
-// y spec-native/DECISIONS.md DEC-0016/DEC-0017.
-const MODEL_TOOL_CALLING_SUPPORTED =
-  (process.env.MODEL_TOOL_CALLING_SUPPORTED ?? "true") !== "false";
+const IDENTITY_KEY_PATH = process.env.IDENTITY_KEY_PATH ?? "./.fhs-identity-star.json";
+const FHS_BOOTSTRAP_ADDRS = process.env.FHS_BOOTSTRAP_ADDRS
+  ? process.env.FHS_BOOTSTRAP_ADDRS.split(",").map((a) => a.trim())
+  : [];
+const FHS_LISTEN_ADDRS = process.env.FHS_LISTEN_ADDRS
+  ? process.env.FHS_LISTEN_ADDRS.split(",").map((a) => a.trim())
+  : ["/ip4/0.0.0.0/tcp/4002/ws"];
+const LLAMA_CPP_URL = process.env.LLAMA_CPP_URL ?? "http://localhost:43110/v1";
+const PROVIDER_NAME = process.env.PROVIDER_NAME ?? "Star FHS";
+const MODEL_ID = process.env.MODEL_ID ?? "default";
+const MODEL_CONTEXT_WINDOW = Number(process.env.MODEL_CONTEXT_WINDOW ?? 4096);
+const ADVERTISE_INTERVAL_MS = 30_000;
 
-// DEC-0081: metadatos de hardware declarados por el operador — opcionales.
-const NODE_INFO_CPU = process.env.NODE_INFO_CPU;
-const NODE_INFO_RAM = process.env.NODE_INFO_RAM;
-const NODE_INFO_GPU = process.env.NODE_INFO_GPU;
-const NODE_INFO_LOCATION = process.env.NODE_INFO_LOCATION;
-const NODE_INFO_DESCRIPTION = process.env.NODE_INFO_DESCRIPTION;
-const hasNodeInfo = NODE_INFO_CPU || NODE_INFO_RAM || NODE_INFO_GPU || NODE_INFO_LOCATION || NODE_INFO_DESCRIPTION;
+// ── PubSub helpers ────────────────────────────────────────────────────────────
 
-const manifest: StarBeacon = {
-  fhsVersion: "0.1",
-  provider: {
-    id: PROVIDER_ID,
-    name: PROVIDER_NAME,
-    type: "llm",
-    visibility: "community",
-  },
-  endpoint: {
-    protocol: "fhs",
-    url: `${WS_SCHEME}://${LLM_PROVIDER_HOST}:${LLM_PROVIDER_PORT}/fhs/v1/chat`,
-  },
-  // DEC-0013: obligatorio para cualquier provider — este de referencia no
-  // retiene nada del contenido de la conversación ni lo usa para entrenar.
-  privacy: {
-    retention: "none",
-    trainingUse: false,
-  },
-  models: [
-    {
-      id: MODEL_ID,
-      displayName: MODEL_DISPLAY_NAME,
-      capabilities: MODEL_TOOL_CALLING_SUPPORTED ? ["chat", "tool.calling"] : ["chat"],
-      contextWindow: MODEL_CONTEXT_WINDOW,
-      toolCalling: MODEL_TOOL_CALLING_SUPPORTED
-        ? { supported: true, mode: "native", formats: ["openai"] }
-        : { supported: false },
-    },
-  ],
-  ...(hasNodeInfo ? {
-    nodeInfo: {
-      ...(NODE_INFO_CPU ? { cpu: NODE_INFO_CPU } : {}),
-      ...(NODE_INFO_RAM ? { ram: NODE_INFO_RAM } : {}),
-      ...(NODE_INFO_GPU ? { gpu: NODE_INFO_GPU } : {}),
-      ...(NODE_INFO_LOCATION ? { location: NODE_INFO_LOCATION } : {}),
-      ...(NODE_INFO_DESCRIPTION ? { description: NODE_INFO_DESCRIPTION } : {}),
-    },
-  } : {}),
-};
-
-const bridge = new LlmBridge(LLAMA_CPP_URL);
-
-// ── Conexión al Registry FHS ──────────────────────────────────────────────
-
-function connectToRegistry() {
-  const ws = new WebSocket(REGISTRY_URL, wsOptions(REGISTRY_URL));
-
-  ws.on("open", () => {
-    log("Conectado al Registry, enviando hello...");
-    const helloTimestamp = Date.now();
-    ws.send(
-      JSON.stringify({
-        type: "hello",
-        providerId: PROVIDER_ID,
-        timestamp: helloTimestamp,
-        fhsVersion: FHS_VERSION,
-        signature: signPayload(identity.privateKey, helloSignaturePayload(PROVIDER_ID, helloTimestamp)),
-      })
-    );
-  });
-
-  ws.on("message", (data: WebSocket.Data) => {
-    const msg = JSON.parse(data.toString());
-
-    if (msg.type === "welcome") {
-      // Verifica que el welcome viene firmado por el Registry que dice ser
-      // (revisión del protocolo 2026-07-10) — protege contra un Atlas
-      // impostor en la misma LAN antes de entregarle el manifiesto.
-      if (
-        msg.registryId &&
-        msg.timestamp &&
-        msg.signature &&
-        !verifySignature(msg.registryId, welcomeSignaturePayload(msg.registryId, msg.timestamp), msg.signature)
-      ) {
-        log(`welcome con firma inválida de ${msg.registryId} — ignorando (¿Registry impostor?)`);
-        return;
-      }
-      log(`Registry dio welcome (lease: ${msg.leaseSeconds}s), registrando...`);
-      const registerTimestamp = Date.now();
-      ws.send(
-        JSON.stringify({
-          type: "register",
-          providerId: PROVIDER_ID,
-          manifest,
-          timestamp: registerTimestamp,
-          signature: signPayload(identity.privateKey, registerSignaturePayload(PROVIDER_ID, registerTimestamp, manifest)),
-        })
-      );
-    }
-
-    if (msg.type === "registered") {
-      log(`Registrado: ${msg.acceptedServices} servicio(s) aceptado(s)`);
-    }
-
-    if (msg.type === "error") {
-      // DEC-0009: el Registry rechaza el hello si el providerId ya tiene
-      // una conexión activa — no reintentar aquí, el "close" que sigue ya
-      // dispara el backoff de reconexión normal.
-      log(`Registry rechazó la conexión: ${msg.data?.code} — ${msg.data?.message}`);
-    }
-  });
-
-  ws.on("close", () => {
-    log("Conexión con Registry perdida, reintentando en 5s...");
-    setTimeout(connectToRegistry, 5000);
-  });
-
-  ws.on("error", (err) => {
-    log(`Error Registry: ${err.message}`);
-  });
-
-  const pingTimer = setInterval(() => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "ping" }));
-    }
-  }, 10_000);
-
-  const renewTimer = setInterval(() => {
-    if (ws.readyState === WebSocket.OPEN) {
-      const renewTimestamp = Date.now();
-      ws.send(
-        JSON.stringify({
-          type: "register",
-          providerId: PROVIDER_ID,
-          manifest,
-          timestamp: renewTimestamp,
-          signature: signPayload(identity.privateKey, registerSignaturePayload(PROVIDER_ID, renewTimestamp, manifest)),
-        })
-      );
-    }
-  }, 25_000);
-
-  ws.on("close", () => {
-    clearInterval(pingTimer);
-    clearInterval(renewTimer);
+function pubsubPublish(node: FhsNode, topic: string, msg: unknown): void {
+  const bytes = fromString(JSON.stringify(msg), "utf8");
+  (node.services.pubsub.publish(topic, bytes) as Promise<unknown>).catch((e: unknown) => {
+    console.error(`[pubsub] error en ${topic}:`, e);
   });
 }
 
-// ── Servidor FHS de Chat (donde el Agent Server se conecta) ───────────────
+function pubsubSubscribe(
+  node: FhsNode,
+  topic: string,
+  handler: (msg: unknown) => void
+): void {
+  node.services.pubsub.subscribe(topic);
+  node.services.pubsub.addEventListener(
+    "message",
+    (evt: { detail: { topic: string; data: Uint8Array } }) => {
+      if (evt.detail.topic !== topic) return;
+      try {
+        handler(JSON.parse(toString(evt.detail.data, "utf8")) as unknown);
+      } catch { /* ignorar frames malformados */ }
+    }
+  );
+}
 
-function startChatServer() {
-  let wss: WebSocketServer;
+// ── DHT helper ────────────────────────────────────────────────────────────────
 
-  if (TLS_ENABLED) {
-    const httpsServer = createHttpsServer({
-      cert: readFileSync(TLS_CERT_PATH!),
-      key: readFileSync(TLS_KEY_PATH!),
-    });
-    wss = new WebSocketServer({ server: httpsServer });
-    httpsServer.listen(LLM_PROVIDER_PORT, () => {
-      log(`Chat server FHS escuchando en wss://localhost:${LLM_PROVIDER_PORT}`);
-    });
-  } else {
-    wss = new WebSocketServer({ port: LLM_PROVIDER_PORT });
-    wss.on("listening", () => {
-      log(`Chat server FHS escuchando en ws://localhost:${LLM_PROVIDER_PORT}`);
-    });
+async function dhtPut(node: FhsNode, key: string, value: unknown): Promise<void> {
+  const keyBytes = fromString(key, "utf8");
+  const valueBytes = fromString(JSON.stringify(value), "utf8");
+  const signal = AbortSignal.timeout(5_000);
+  for await (const _ of node.services.dht.put(keyBytes, valueBytes, { signal })) {
+    void _;
   }
-
-  wss.on("connection", (socket) => {
-    log("Agent Server conectado al chat FHS");
-
-    // DEC-0069: peticiones en vuelo por missionId — necesario para chat.cancel.
-    const pending = new Map<string, AbortController>();
-
-    socket.on("message", (raw) => {
-      void handleMessage(socket, pending, raw);
-    });
-
-    socket.on("close", () => {
-      log("Agent Server desconectado del chat");
-      // Abortar cualquier inferencia en curso al cerrar la conexión.
-      for (const ctrl of pending.values()) ctrl.abort();
-      pending.clear();
-    });
-
-    socket.on("error", (err) => {
-      log(`Error en socket de chat: ${err.message}`);
-    });
-  });
 }
 
-async function handleMessage(
-  socket: WebSocket,
-  pending: Map<string, AbortController>,
-  raw: WebSocket.Data
-) {
+// ── Manejo del stream directo Navigator → Star ────────────────────────────────
+
+async function handleChatStream(
+  identity: FhsIdentity,
+  bridge: LlmBridge,
+  stream: FhsNode
+): Promise<void> {
+  const messages = decodeStream(stream);
+
+  // 1. Leer Handshake del Navigator
+  const handshakeResult = await messages.next();
+  if (handshakeResult.done || handshakeResult.value.type !== "handshake") {
+    sendEnvelope(stream, "error", {
+      code: "INVALID_ARGUMENTS",
+      message: "esperaba handshake como primer mensaje",
+    });
+    return;
+  }
+  const handshake = handshakeResult.value.payload as HandshakeMessage;
+  console.log(`[stream] handshake de ${handshake.beacon ?? identity.did}`);
+
+  // 2. Responder HandshakeAck
+  const ack: HandshakeAckMessage = {
+    fhsVersion: "0.1",
+    leaseSeconds: 300,
+    heartbeatSeconds: 30,
+    leaseExpires: Date.now() + 300_000,
+    acceptedServices: 1,
+    trustLevel: "community",
+  };
+  sendEnvelope(stream, "handshake_ack", ack);
+
+  // 3. Leer ChatRequest
+  const reqResult = await messages.next();
+  if (reqResult.done || reqResult.value.type !== "chat_request") {
+    sendEnvelope(stream, "error", {
+      code: "INVALID_ARGUMENTS",
+      message: "esperaba chat_request",
+    });
+    return;
+  }
+  const req = reqResult.value.payload as ChatP2pRequestMessage;
+  console.log(`[mission] ${req.missionId} — chat iniciado`);
+
+  // 4. Dispatch ack
+  sendEnvelope(stream, "dispatch_ack", {
+    missionId: req.missionId,
+    queuedAt: Date.now(),
+  });
+
+  // 5. Generar respuesta con streaming LLM
+  const generateRequest = {
+    model: req.model ?? MODEL_ID,
+    messages: req.messages as Parameters<LlmBridge["stream"]>[0]["messages"],
+    tools: req.tools as unknown as Parameters<LlmBridge["stream"]>[0]["tools"],
+    temperature: 0.7,
+    max_tokens: MODEL_CONTEXT_WINDOW,
+  };
+
+  const abortCtrl = new AbortController();
+  let fullContent = "";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let toolCalls: any[] = [];
+
   try {
-    const msg = JSON.parse(raw.toString()) as { type?: string; missionId?: string };
+    const gen = bridge.stream(generateRequest, abortCtrl.signal);
 
-    // ── chat.cancel (DEC-0069): abortar inferencia en curso ────────────────
-    if (msg.type === "chat.cancel") {
-      const ctrl = pending.get(msg.missionId ?? "");
-      if (ctrl) {
-        ctrl.abort();
-        pending.delete(msg.missionId!);
-        const cancelledMsg: ChatErrorMessage = {
-          type: "chat.error",
-          missionId: msg.missionId!,
-          code: FHS_ERROR_CODES.CANCELLED,
-          message: "Petición cancelada por el invocador",
-        };
-        socket.send(JSON.stringify(cancelledMsg));
-        log(`chat.cancel ${msg.missionId} — inferencia abortada`);
-      }
-      return;
-    }
-
-    if (msg.type !== "chat.request") return;
-
-    const req = msg as ChatRequestMessage;
-    log(`chat.request ${req.missionId}: model=${req.request.model}, stream=${req.request.stream}`);
-    log(`  tools=${req.request.tools ? req.request.tools.length : 0}, messages=${req.request.messages?.length || 0}`);
-
-    // DEC-0069: verificar CallerAuth si el invocador la envía.
-    // Solo rechaza si las credenciales están presentes pero son inválidas —
-    // llamadas anónimas se aceptan para compatibilidad hacia atrás.
-    if (req.callerId && req.timestamp && req.signature) {
-      if (!verifySignature(req.callerId, invokeSignaturePayload(req.callerId, req.missionId, req.timestamp), req.signature)) {
-        log(`  → UNAUTHORIZED: firma de invocación inválida de ${req.callerId}`);
-        const unauth: ChatErrorMessage = {
-          type: "chat.error",
-          missionId: req.missionId,
-          code: FHS_ERROR_CODES.UNAUTHORIZED,
-          message: "Firma de invocación inválida",
-        };
-        socket.send(JSON.stringify(unauth));
-        return;
-      }
-    }
-
-    const ctrl = new AbortController();
-    pending.set(req.missionId, ctrl);
-
-    // Mosquito: confirmar que la petición ya está encolada.
-    const ack: DispatchAckMessage = {
-      type: "dispatch.ack",
-      missionId: req.missionId,
-      queuedAt: Date.now(),
-    };
-    socket.send(JSON.stringify(ack));
-
-    try {
-      if (req.request.stream) {
-        log(`  → iniciando stream`);
-        const generator = bridge.stream(req.request, ctrl.signal);
-        let result = await generator.next();
-
-        while (!result.done) {
-          const deltaMsg: ChatDeltaMessage = {
-            type: "chat.delta",
-            missionId: req.missionId,
-            delta: result.value,
-          };
-          socket.send(JSON.stringify(deltaMsg));
-          result = await generator.next();
+    while (true) {
+      const chunk = await gen.next();
+      if (chunk.done) {
+        if (chunk.value) {
+          toolCalls = chunk.value.toolCalls ?? [];
+          if (!fullContent && chunk.value.message?.content) {
+            fullContent = chunk.value.message.content as string;
+          }
         }
-
-        log(`  → stream completado`);
-        const completed: ChatCompletedMessage = {
-          type: "chat.completed",
-          missionId: req.missionId,
-          response: result.value,
-        };
-        socket.send(JSON.stringify(completed));
-      } else {
-        log(`  → llamando bridge.generate()`);
-        const startedAt = Date.now();
-        const response = await bridge.generate(req.request, ctrl.signal);
-        log(`  → bridge.generate() completado en ${Date.now() - startedAt}ms`);
-        const completed: ChatCompletedMessage = {
-          type: "chat.completed",
-          missionId: req.missionId,
-          response,
-        };
-        socket.send(JSON.stringify(completed));
-        log(`  → chat.completed enviado`);
+        break;
       }
-    } catch (err: any) {
-      // AbortError: chat.cancel ya envió CANCELLED — no enviar nada más.
-      if (err.name === "AbortError") { return; }
-      log(`  → ERROR: ${err.message}`);
-      console.error(`[fhs-llm] bridge error:`, err);
-      const errorMsg: ChatErrorMessage = {
-        type: "chat.error",
+      const delta: ChatP2pDeltaMessage = {
         missionId: req.missionId,
-        code: FHS_ERROR_CODES.UPSTREAM_UNAVAILABLE,
-        message: err.message,
+        delta: chunk.value,
       };
-      socket.send(JSON.stringify(errorMsg));
-    } finally {
-      pending.delete(req.missionId);
+      fullContent += chunk.value;
+      sendEnvelope(stream, "chat_delta", delta);
     }
-  } catch (err: any) {
-    log(`  → PARSE ERROR: ${err.message}`);
-    console.error(`[fhs-llm] parse error:`, err);
-    socket.send(JSON.stringify({
-      type: "chat.error",
-      missionId: "unknown",
-      code: FHS_ERROR_CODES.PARSE_ERROR,
-      message: err.message,
-    }));
-  }
-}
-
-// ── Arranque ───────────────────────────────────────────────────────────────
-
-function log(message: string) {
-  const ts = new Date().toISOString().slice(11, 23);
-  console.log(`[fhs-llm ${ts}] ${message}`);
-}
-
-async function main() {
-  log(`Iniciando LLM Provider FHS v${manifest.fhsVersion}`);
-  log(`  Provider : ${PROVIDER_NAME} (${PROVIDER_ID})`);
-  log(`  llama.cpp: ${LLAMA_CPP_URL}`);
-  log(`  Chat FHS : ${WS_SCHEME}://localhost:${LLM_PROVIDER_PORT}`);
-
-  if (USE_MDNS_DISCOVERY) {
-    log("REGISTRY_URL no configurado — buscando Registry por mDNS...");
-    try {
-      const found = await discoverRegistryUrl(REGISTRY_EXPECTED_DID);
-      REGISTRY_URL = found.url;
-      log(`Registry encontrado por mDNS: ${REGISTRY_URL} (did: ${found.did})`);
-    } catch (err: any) {
-      log(`No se pudo autodescubrir el Registry: ${err.message}`);
-      process.exit(1);
-    }
-  } else {
-    log(`  Registry : ${REGISTRY_URL}`);
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    sendEnvelope(stream, "chat_error", { missionId: req.missionId, error: errMsg });
+    console.error(`[mission] ${req.missionId} error LLM:`, err);
+    return;
   }
 
-  connectToRegistry();
-  startChatServer();
+  // 6. Completado
+  const completed: ChatP2pCompletedMessage = {
+    missionId: req.missionId,
+    content: fullContent,
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    toolCalls,
+  };
+  sendEnvelope(stream, "chat_completed", completed);
+  console.log(`[mission] ${req.missionId} completada (${fullContent.length} chars)`);
 }
 
-main();
+// ── Bootstrap + ciclo P2P ─────────────────────────────────────────────────────
+
+async function main(): Promise<void> {
+  const identity = await loadOrCreateFhsIdentity(IDENTITY_KEY_PATH);
+  console.log(`[star] DID: ${identity.did}`);
+
+  const node: FhsNode = await createStarNode({
+    identity,
+    listenAddrs: FHS_LISTEN_ADDRS,
+    bootstrapAddrs: FHS_BOOTSTRAP_ADDRS,
+  });
+
+  const multiaddrs = (): string[] =>
+    (node.getMultiaddrs() as Array<{ toString(): string }>).map((a) => a.toString());
+
+  console.log(`[star] escuchando en: ${multiaddrs().join(", ")}`);
+  if (FHS_BOOTSTRAP_ADDRS.length === 0) {
+    console.warn("[star] FHS_BOOTSTRAP_ADDRS no configurado — nodo aislado");
+  }
+
+  // Esperar estabilización del DHT
+  await new Promise<void>((r) => setTimeout(r, 2_000));
+
+  // Publicar DhtBeaconRecord en KadDHT
+  const beaconPayload: DhtBeaconRecord = {
+    did: identity.did,
+    beacon: JSON.stringify({ type: "star", name: PROVIDER_NAME }),
+    multiaddrs: multiaddrs(),
+    publishedAt: Date.now(),
+    expiresAt: Date.now() + 24 * 60 * 60 * 1_000,
+    fhsVersion: "0.1",
+    signature: new Uint8Array(0),
+  };
+  await dhtPut(node, `/fhs/beacon/${identity.did}`, beaconPayload).catch((e: unknown) => {
+    console.warn("[dht] error publicando beacon:", e);
+  });
+  console.log("[dht] beacon publicado");
+
+  const bridge = new LlmBridge(LLAMA_CPP_URL);
+
+  // Anuncio FloodSub cada 30s
+  const advertise = (): void => {
+    const msg: NodeAdvertiseMessage = {
+      did: identity.did,
+      beacon: JSON.stringify({ type: "star", name: PROVIDER_NAME }),
+      multiaddrs: multiaddrs(),
+      timestamp: Date.now(),
+      ttlSeconds: 60,
+      trustLevel: "community",
+      signature: new Uint8Array(0),
+    };
+    pubsubPublish(node, TOPIC_NODES_ADVERTISE, msg);
+  };
+  advertise();
+  const advertiseTimer = setInterval(advertise, ADVERTISE_INTERVAL_MS);
+
+  // Escuchar MissionOffer — ofertar si somos un Star con capacidad "chat"
+  pubsubSubscribe(node, TOPIC_MISSIONS_OFFER, (raw) => {
+    const offer = raw as MissionOfferMessage;
+    if (!offer.missionId) return;
+    if (offer.missionType !== "chat") return;
+    if (!offer.requiredCapabilities?.includes("chat")) return;
+
+    const bid: MissionBidMessage = {
+      missionId: offer.missionId,
+      providerDid: identity.did,
+      providerMultiaddrs: multiaddrs(),
+      providerType: "star",
+      offeredCapabilities: ["chat"],
+      offeredModel: MODEL_ID,
+      reputationScore: 0.5,
+      estimatedLatencyMs: 200,
+      trustLevel: "community",
+      timestamp: Date.now(),
+      signature: new Uint8Array(0),
+    };
+    pubsubPublish(node, TOPIC_MISSIONS_BID, bid);
+    console.log(`[bid] oferta enviada para mision ${offer.missionId}`);
+  });
+
+  // Escuchar MissionAssign — solo log; el Navigator abre el stream
+  pubsubSubscribe(node, TOPIC_MISSIONS_ASSIGN, (raw) => {
+    const assign = raw as MissionAssignMessage;
+    if (assign.assignedProvider === identity.did) {
+      console.log(`[assign] mision ${assign.missionId} asignada — esperando stream entrante`);
+    }
+  });
+
+  // Registrar handler para el protocolo de stream directo /fhs/v1/0.1.0
+  node.handle(FHS_STREAM_PROTOCOL, (stream: FhsNode) => {
+    console.log("[stream] conexion entrante de Navigator");
+    handleChatStream(identity, bridge, stream).catch((e: unknown) => {
+      console.error("[stream] error no capturado:", e);
+    });
+  });
+
+  for (const sig of ["SIGTERM", "SIGINT"] as const) {
+    process.once(sig, () => {
+      clearInterval(advertiseTimer);
+      void (node.stop() as Promise<void>).then(() => process.exit(0));
+    });
+  }
+
+  console.log(`[star] P2P activo — ${PROVIDER_NAME} (${MODEL_ID})`);
+}
+
+void main();
