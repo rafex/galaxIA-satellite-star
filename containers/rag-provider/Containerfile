@@ -14,7 +14,7 @@
 # o con podman (>=4):
 #   podman build --secret id=gh_token,env=GH_TOKEN -f containers/rag-provider/Containerfile .
 
-FROM docker.io/library/node:20-alpine AS builder
+FROM docker.io/library/node:22-alpine AS builder
 WORKDIR /app
 
 COPY package*.json .npmrc ./
@@ -27,7 +27,7 @@ COPY examples/rag-provider ./examples/rag-provider
 
 RUN npm run build -w examples/rag-provider
 
-FROM docker.io/library/node:20-alpine
+FROM docker.io/library/node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production
 

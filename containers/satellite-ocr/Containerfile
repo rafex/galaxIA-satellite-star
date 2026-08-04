@@ -11,7 +11,7 @@
 # o con podman (>=4):
 #   podman build --secret id=gh_token,env=GH_TOKEN -f containers/satellite-ocr/Containerfile .
 
-FROM docker.io/library/node:20-alpine AS builder
+FROM docker.io/library/node:22-alpine AS builder
 WORKDIR /app
 
 COPY package*.json .npmrc ./
@@ -23,7 +23,7 @@ COPY examples/satellite-ocr-example ./examples/satellite-ocr-example
 
 RUN npm run build -w examples/satellite-ocr-example
 
-FROM docker.io/library/node:20-alpine
+FROM docker.io/library/node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production
 
