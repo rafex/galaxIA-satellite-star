@@ -30,7 +30,7 @@ import {
   type P2pToolDefinition,
 } from "./fhs-p2p-types.js";
 import { fromString } from "uint8arrays";
-import { configureSigner, decodeTopic, encodeDht, encodeTopic } from "@galaxia/fhs-wire";
+import { configureSigner, decodeTopic, dynamicValueToJson, encodeDht, encodeTopic } from "@galaxia/fhs-wire";
 import {
   loadOrCreateFhsIdentity,
   createStarNode,
@@ -133,14 +133,14 @@ async function handleToolStream(
 
   // 1. Leer Handshake del Navigator
   const handshakeResult = await messages.next();
-  if (handshakeResult.done || handshakeResult.value.type !== "handshake") {
+  if (handshakeResult.done || handshakeResult.value.payload.case !== "handshake") {
     sendEnvelope(stream, "error", {
       code: "INVALID_ARGUMENTS",
       message: "esperaba handshake como primer mensaje",
     });
     return;
   }
-  const handshake = handshakeResult.value.payload as unknown as HandshakeMessage;
+  const handshake = handshakeResult.value.payload.value;
   console.log(`[stream] handshake de ${handshake.beacon ?? identity.did}`);
 
   // 2. Responder HandshakeAck
@@ -159,10 +159,10 @@ async function handleToolStream(
     const frame = await messages.next();
     if (frame.done) break;
 
-    const { type, payload } = frame.value;
+    const { payload } = frame.value;
 
-    if (type === "tool_list") {
-      const req = payload as unknown as ToolP2pListRequestMessage;
+    if (payload.case === "toolList") {
+      const req = payload.value;
       console.log(`[mission] ${req.missionId} — tool_list solicitado`);
 
       const resp: ToolP2pListResponseMessage = {
@@ -173,8 +173,8 @@ async function handleToolStream(
       continue;
     }
 
-    if (type === "tool_call") {
-      const req = payload as unknown as ToolP2pCallRequestMessage;
+    if (payload.case === "toolCall") {
+      const req = payload.value;
       console.log(`[mission] ${req.missionId} — ${req.toolCalls.length} tool_call(s)`);
 
       const dispatchAck: DispatchP2pAckMessage = {
@@ -185,9 +185,10 @@ async function handleToolStream(
 
       for (const call of req.toolCalls) {
         try {
-          const args = JSON.parse(call.function.arguments) as Record<string, unknown>;
+          const args = (dynamicValueToJson(call.function?.arguments) ?? {}) as Record<string, unknown>;
 
-          if (call.function.name === "document_index") {
+          const functionName = call.function?.name ?? "";
+          if (functionName === "document_index") {
             const conversationId = String(args.conversationId ?? "");
             const text = String(args.text ?? "");
             const source = String(args.source ?? "user-upload");
@@ -203,7 +204,7 @@ async function handleToolStream(
             continue;
           }
 
-          if (call.function.name === "document_query") {
+          if (functionName === "document_query") {
             const conversationId = String(args.conversationId ?? "");
             const query = String(args.query ?? "");
             const topK = typeof args.topK === "number" ? args.topK : 3;
@@ -222,7 +223,7 @@ async function handleToolStream(
           const errMsg: ToolP2pCallErrorMessage = {
             missionId: req.missionId,
             toolCallId: call.id,
-            error: `Herramienta desconocida: ${call.function.name}`,
+            error: `Herramienta desconocida: ${functionName}`,
           };
           sendEnvelope(stream, "tool_error", errMsg);
         } catch (err) {
@@ -240,7 +241,7 @@ async function handleToolStream(
 
     sendEnvelope(stream, "error", {
       code: "INVALID_ARGUMENTS",
-      message: `tipo de mensaje inesperado: ${type}`,
+      message: `tipo de mensaje inesperado: ${payload.case ?? "vacío"}`,
     });
     break;
   }

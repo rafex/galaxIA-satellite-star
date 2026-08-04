@@ -23,14 +23,14 @@ import {
   verifySignature,
 } from "@rafex/galaxia-fhs-protocol";
 
+type AnyRecord = Record<string, unknown>;
+
 export const FHS_STREAM_PROTOCOL = "/fhs/v1/0.1.0";
 export const TOPIC_NODES_ADVERTISE = "fhs/v1/nodes/advertise";
 export const TOPIC_MISSIONS_OFFER = "fhs/v1/missions/offer";
 export const TOPIC_MISSIONS_BID = "fhs/v1/missions/bid";
 export const TOPIC_MISSIONS_ASSIGN = "fhs/v1/missions/assign";
 export const TOPIC_REPUTATION_UPDATE = "fhs/v1/reputation/update";
-
-type AnyRecord = Record<string, unknown>;
 
 let signer: { did: string; privateKey: { sign(data: Uint8Array): Uint8Array } } | undefined;
 
@@ -56,46 +56,46 @@ function signedBeacon(beacon: FhsProto.Beacon): { beacon: FhsProto.Beacon; hash:
   return { beacon, hash: sha256(bytes) };
 }
 
-export type FhsEnvelope = { type: string; payload: AnyRecord };
+type PayloadValueByType = {
+  handshake: FhsProto.HandshakeMessage;
+  handshake_ack: FhsProto.HandshakeAckMessage;
+  error: FhsProto.ErrorMessage;
+  chat_request: FhsProto.ChatRequestMessage;
+  chat_delta: FhsProto.ChatDeltaMessage;
+  chat_completed: FhsProto.ChatCompletedMessage;
+  chat_error: FhsProto.ChatErrorMessage;
+  dispatch_ack: FhsProto.DispatchAckMessage;
+  tool_call: FhsProto.ToolCallRequestMessage;
+  tool_result: FhsProto.ToolCallResultMessage;
+  tool_error: FhsProto.ToolCallErrorMessage;
+  tool_list: FhsProto.ToolListRequestMessage;
+  tool_list_resp: FhsProto.ToolListResponseMessage;
+};
 
+const payloadCase = {
+  handshake: "handshake",
+  handshake_ack: "handshakeAck",
+  error: "error",
+  chat_request: "chatRequest",
+  chat_delta: "chatDelta",
+  chat_completed: "chatCompleted",
+  chat_error: "chatError",
+  dispatch_ack: "dispatchAck",
+  tool_call: "toolCall",
+  tool_result: "toolResult",
+  tool_error: "toolError",
+  tool_list: "toolList",
+  tool_list_resp: "toolListResp",
+} as const;
+
+// Adaptador temporal únicamente para los constructores de topic/DHT que aún
+// se migran a FhsProto en los providers. Nunca se usa para serializar frames
+// de stream: el stream ya recibe y entrega mensajes protobuf tipados.
 function parseLocal(value: unknown): AnyRecord {
   if (typeof value === "string") {
     try { return JSON.parse(value) as AnyRecord; } catch { return {}; }
   }
   return (value && typeof value === "object") ? value as AnyRecord : {};
-}
-
-function dynamicFrom(value: unknown): FhsProto.DynamicValue {
-  if (typeof value === "boolean") return create(FhsProto.DynamicValueSchema, { kind: { case: "booleanValue", value } });
-  if (typeof value === "number") {
-    return Number.isInteger(value)
-      ? create(FhsProto.DynamicValueSchema, { kind: { case: "integerValue", value: BigInt(value) } })
-      : create(FhsProto.DynamicValueSchema, { kind: { case: "numberValue", value } });
-  }
-  if (typeof value === "string") return create(FhsProto.DynamicValueSchema, { kind: { case: "stringValue", value } });
-  if (Array.isArray(value)) {
-    return create(FhsProto.DynamicValueSchema, {
-      kind: { case: "listValue", value: create(FhsProto.DynamicListSchema, { values: value.map(dynamicFrom) }) },
-    });
-  }
-  if (value !== null && typeof value === "object") {
-    const fields: Record<string, FhsProto.DynamicValue> = {};
-    for (const [key, item] of Object.entries(value)) fields[key] = dynamicFrom(item);
-    return create(FhsProto.DynamicValueSchema, {
-      kind: { case: "objectValue", value: create(FhsProto.DynamicObjectSchema, { fields }) },
-    });
-  }
-  throw new TypeError("DynamicValue no soporta null/undefined");
-}
-
-function dynamicTo(value: FhsProto.DynamicValue | undefined): unknown {
-  if (!value?.kind.case) return undefined;
-  switch (value.kind.case) {
-    case "booleanValue": case "numberValue": case "stringValue": case "bytesValue": return value.kind.value;
-    case "integerValue": return Number(value.kind.value);
-    case "listValue": return value.kind.value.values.map(dynamicTo);
-    case "objectValue": return Object.fromEntries(Object.entries(value.kind.value.fields).map(([k, v]) => [k, dynamicTo(v)]));
-  }
 }
 
 function beaconFromLegacy(value: unknown): FhsProto.Beacon {
@@ -128,12 +128,46 @@ function beaconToLegacy(value: FhsProto.Beacon | undefined): string {
   });
 }
 
-function schemaFromLegacy(value: unknown): FhsProto.ToolInputSchema | undefined {
+function dynamicFrom(value: unknown): FhsProto.DynamicValue {
+  if (typeof value === "boolean") return create(FhsProto.DynamicValueSchema, { kind: { case: "booleanValue", value } });
+  if (typeof value === "number") {
+    return Number.isInteger(value)
+      ? create(FhsProto.DynamicValueSchema, { kind: { case: "integerValue", value: BigInt(value) } })
+      : create(FhsProto.DynamicValueSchema, { kind: { case: "numberValue", value } });
+  }
+  if (typeof value === "string") return create(FhsProto.DynamicValueSchema, { kind: { case: "stringValue", value } });
+  if (Array.isArray(value)) return create(FhsProto.DynamicValueSchema, {
+    kind: { case: "listValue", value: create(FhsProto.DynamicListSchema, { values: value.map(dynamicFrom) }) },
+  });
+  if (value !== null && typeof value === "object") {
+    const fields: Record<string, FhsProto.DynamicValue> = {};
+    for (const [key, item] of Object.entries(value)) fields[key] = dynamicFrom(item);
+    return create(FhsProto.DynamicValueSchema, {
+      kind: { case: "objectValue", value: create(FhsProto.DynamicObjectSchema, { fields }) },
+    });
+  }
+  throw new TypeError("DynamicValue no soporta null/undefined");
+}
+
+export function dynamicValueToJson(value: FhsProto.DynamicValue | undefined): unknown {
+  if (!value?.kind.case) return undefined;
+  switch (value.kind.case) {
+    case "booleanValue":
+    case "numberValue":
+    case "stringValue":
+    case "bytesValue": return value.kind.value;
+    case "integerValue": return Number(value.kind.value);
+    case "listValue": return value.kind.value.values.map(dynamicValueToJson);
+    case "objectValue": return Object.fromEntries(Object.entries(value.kind.value.fields).map(([key, item]) => [key, dynamicValueToJson(item)]));
+  }
+}
+
+function schemaFromLocal(value: unknown): FhsProto.ToolInputSchema | undefined {
   if (!value) return undefined;
   const input = parseLocal(value);
   const properties: Record<string, FhsProto.ToolInputSchema> = {};
   const rawProperties = input.properties && typeof input.properties === "object" ? input.properties as AnyRecord : {};
-  for (const [key, property] of Object.entries(rawProperties)) properties[key] = schemaFromLegacy(property) ?? create(FhsProto.ToolInputSchemaSchema, { type: "object" });
+  for (const [key, property] of Object.entries(rawProperties)) properties[key] = schemaFromLocal(property) ?? create(FhsProto.ToolInputSchemaSchema, { type: "object" });
   return create(FhsProto.ToolInputSchemaSchema, {
     type: String(input.type ?? "object"),
     description: String(input.description ?? ""),
@@ -143,10 +177,10 @@ function schemaFromLegacy(value: unknown): FhsProto.ToolInputSchema | undefined 
   });
 }
 
-function toolCallFromLegacy(value: AnyRecord): FhsProto.ToolCall {
+function toolCallFromLocal(value: AnyRecord): FhsProto.ToolCall {
   const fn = parseLocal(value.function);
   let args: unknown = {};
-  try { args = JSON.parse(String(fn.arguments ?? "{}")); } catch { /* adapter local inválido */ }
+  try { args = JSON.parse(String(fn.arguments ?? "{}")); } catch { /* se conserva como objeto vacío */ }
   return create(FhsProto.ToolCallSchema, {
     id: String(value.id ?? ""),
     type: String(value.type ?? "function"),
@@ -154,61 +188,30 @@ function toolCallFromLegacy(value: AnyRecord): FhsProto.ToolCall {
   });
 }
 
-function toolCallToLegacy(value: FhsProto.ToolCall): AnyRecord {
-  const fn = value.function;
-  return { id: value.id, type: value.type, function: { name: fn?.name ?? "", arguments: JSON.stringify(dynamicTo(fn?.arguments)) } };
-}
-
-function messageFromLegacy(value: AnyRecord): FhsProto.Message {
+function messageFromLocal(value: AnyRecord): FhsProto.Message {
   const rawToolCalls = value.tool_calls ?? value.toolCalls;
   return create(FhsProto.MessageSchema, {
     role: String(value.role ?? "user"),
     content: String(value.content ?? ""),
     toolCallId: String(value.tool_call_id ?? value.toolCallId ?? ""),
-    toolCalls: Array.isArray(rawToolCalls) ? rawToolCalls.map((call) => toolCallFromLegacy(call as AnyRecord)) : [],
+    toolCalls: Array.isArray(rawToolCalls) ? rawToolCalls.map((call) => toolCallFromLocal(call as AnyRecord)) : [],
   });
 }
 
-function messageToLegacy(value: FhsProto.Message): AnyRecord {
-  return { role: value.role, content: value.content, tool_call_id: value.toolCallId || undefined, tool_calls: value.toolCalls.map(toolCallToLegacy) };
-}
-
-function envelopeFromLegacy(type: string, payload: AnyRecord): FhsProto.Envelope {
-  const base = { messageId: crypto.randomUUID(), sourcePeerId: signer?.did ?? "", destPeerId: "", timestamp: BigInt(Date.now()), version: "1", signature: new Uint8Array() };
+function payloadFromLocal(type: string, payload: unknown): unknown {
+  const input = parseLocal(payload);
   switch (type) {
-    case "handshake": return create(FhsProto.EnvelopeSchema, { ...base, payload: { case: "handshake", value: create(FhsProto.HandshakeMessageSchema, { fhsVersion: String(payload.fhsVersion ?? "0.1"), listenAddrs: (payload.listenAddrs ?? []) as string[], beacon: beaconFromLegacy(payload.beacon) }) } });
-    case "handshake_ack": return create(FhsProto.EnvelopeSchema, { ...base, payload: { case: "handshakeAck", value: create(FhsProto.HandshakeAckMessageSchema, { fhsVersion: String(payload.fhsVersion ?? "0.1"), leaseSeconds: Number(payload.leaseSeconds ?? 300), heartbeatSeconds: Number(payload.heartbeatSeconds ?? 30), leaseExpires: BigInt(Number(payload.leaseExpires ?? Date.now() + 300000)), acceptedServices: Number(payload.acceptedServices ?? 0), trustLevel: String(payload.trustLevel ?? "community") }) } });
-    case "error": return create(FhsProto.EnvelopeSchema, { ...base, payload: { case: "error", value: create(FhsProto.ErrorMessageSchema, { code: FhsProto.FhsErrorCode.FHS_ERROR_CODE_UNSPECIFIED, message: String(payload.message ?? "FHS error") }) } });
-    case "chat_request": return create(FhsProto.EnvelopeSchema, { ...base, payload: { case: "chatRequest", value: create(FhsProto.ChatRequestMessageSchema, { missionId: String(payload.missionId), messages: ((payload.messages ?? []) as unknown[]).map((item) => messageFromLegacy(item as AnyRecord)), tools: ((payload.tools ?? []) as unknown[]).map((item) => { const tool = item as AnyRecord; const fn = parseLocal(tool.function); return create(FhsProto.ToolDefinitionSchema, { name: String(fn.name ?? tool.name ?? ""), description: String(fn.description ?? tool.description ?? ""), inputSchema: schemaFromLegacy(fn.parameters ?? tool.inputSchema) }); }), model: String(payload.model ?? "") }) } });
-    case "chat_delta": return create(FhsProto.EnvelopeSchema, { ...base, payload: { case: "chatDelta", value: create(FhsProto.ChatDeltaMessageSchema, { missionId: String(payload.missionId), delta: String(payload.delta ?? "") }) } });
-    case "chat_completed": return create(FhsProto.EnvelopeSchema, { ...base, payload: { case: "chatCompleted", value: create(FhsProto.ChatCompletedMessageSchema, { missionId: String(payload.missionId), content: String(payload.content ?? ""), toolCalls: ((payload.toolCalls ?? []) as unknown[]).map((item) => toolCallFromLegacy(item as AnyRecord)) }) } });
-    case "chat_error": return create(FhsProto.EnvelopeSchema, { ...base, payload: { case: "chatError", value: create(FhsProto.ChatErrorMessageSchema, { missionId: String(payload.missionId), error: String(payload.error ?? payload.message ?? "FHS error") }) } });
-    case "dispatch_ack": return create(FhsProto.EnvelopeSchema, { ...base, payload: { case: "dispatchAck", value: create(FhsProto.DispatchAckMessageSchema, { missionId: String(payload.missionId), queuedAt: BigInt(Number(payload.queuedAt ?? Date.now())) }) } });
-    case "tool_call": return create(FhsProto.EnvelopeSchema, { ...base, payload: { case: "toolCall", value: create(FhsProto.ToolCallRequestMessageSchema, { missionId: String(payload.missionId), toolCalls: ((payload.toolCalls ?? []) as unknown[]).map((item) => toolCallFromLegacy(item as AnyRecord)) }) } });
-    case "tool_result": return create(FhsProto.EnvelopeSchema, { ...base, payload: { case: "toolResult", value: create(FhsProto.ToolCallResultMessageSchema, { missionId: String(payload.missionId), toolCallId: String(payload.toolCallId ?? ""), result: dynamicFrom(payload.result) }) } });
-    case "tool_error": return create(FhsProto.EnvelopeSchema, { ...base, payload: { case: "toolError", value: create(FhsProto.ToolCallErrorMessageSchema, { missionId: String(payload.missionId), toolCallId: String(payload.toolCallId ?? ""), error: String(payload.error ?? "FHS error") }) } });
-    case "tool_list": return create(FhsProto.EnvelopeSchema, { ...base, payload: { case: "toolList", value: create(FhsProto.ToolListRequestMessageSchema, { missionId: String(payload.missionId) }) } });
-    case "tool_list_resp": return create(FhsProto.EnvelopeSchema, { ...base, payload: { case: "toolListResp", value: create(FhsProto.ToolListResponseMessageSchema, { missionId: String(payload.missionId), tools: ((payload.tools ?? []) as unknown[]).map((item) => { const tool = item as AnyRecord; return create(FhsProto.ToolDefinitionSchema, { name: String(tool.name ?? ""), description: String(tool.description ?? ""), inputSchema: schemaFromLegacy(tool.inputSchema) }); }) }) } });
-    default: throw new Error(`Tipo FHS no soportado: ${type}`);
+    case "handshake_ack": return create(FhsProto.HandshakeAckMessageSchema, { fhsVersion: String(input.fhsVersion ?? "0.1"), leaseSeconds: Number(input.leaseSeconds ?? 300), heartbeatSeconds: Number(input.heartbeatSeconds ?? 30), leaseExpires: BigInt(Number(input.leaseExpires ?? Date.now() + 300000)), acceptedServices: Number(input.acceptedServices ?? 0), trustLevel: String(input.trustLevel ?? "community") });
+    case "error": return create(FhsProto.ErrorMessageSchema, { code: FhsProto.FhsErrorCode.INVALID_ARGUMENTS, message: String(input.message ?? "FHS error") });
+    case "chat_delta": return create(FhsProto.ChatDeltaMessageSchema, { missionId: String(input.missionId ?? ""), delta: String(input.delta ?? "") });
+    case "chat_completed": return create(FhsProto.ChatCompletedMessageSchema, { missionId: String(input.missionId ?? ""), content: String(input.content ?? ""), toolCalls: Array.isArray(input.toolCalls) ? input.toolCalls.map((call) => toolCallFromLocal(call as AnyRecord)) : [] });
+    case "chat_error": return create(FhsProto.ChatErrorMessageSchema, { missionId: String(input.missionId ?? ""), error: String(input.error ?? "FHS error") });
+    case "dispatch_ack": return create(FhsProto.DispatchAckMessageSchema, { missionId: String(input.missionId ?? ""), queuedAt: BigInt(Number(input.queuedAt ?? Date.now())) });
+    case "tool_list_resp": return create(FhsProto.ToolListResponseMessageSchema, { missionId: String(input.missionId ?? ""), tools: Array.isArray(input.tools) ? input.tools.map((tool) => { const item = tool as AnyRecord; return create(FhsProto.ToolDefinitionSchema, { name: String(item.name ?? ""), description: String(item.description ?? ""), inputSchema: schemaFromLocal(item.inputSchema) }); }) : [] });
+    case "tool_result": return create(FhsProto.ToolCallResultMessageSchema, { missionId: String(input.missionId ?? ""), toolCallId: String(input.toolCallId ?? ""), result: dynamicFrom(input.result) });
+    case "tool_error": return create(FhsProto.ToolCallErrorMessageSchema, { missionId: String(input.missionId ?? ""), toolCallId: String(input.toolCallId ?? ""), error: String(input.error ?? "FHS error") });
+    default: throw new Error(`Tipo FHS de salida no soportado: ${type}`);
   }
-}
-
-function legacyFromEnvelope(envelope: FhsProto.Envelope): { type: string; payload: AnyRecord } {
-  const payload = envelope.payload;
-  if (payload.case === "handshake") return { type: "handshake", payload: { ...payload.value, beacon: beaconToLegacy(payload.value.beacon) } };
-  if (payload.case === "handshakeAck") return { type: "handshake_ack", payload: { ...payload.value, leaseExpires: Number(payload.value.leaseExpires) } };
-  if (payload.case === "error") return { type: "error", payload: { message: payload.value.message } };
-  if (payload.case === "chatRequest") return { type: "chat_request", payload: { ...payload.value, messages: payload.value.messages.map(messageToLegacy), tools: payload.value.tools.map((tool) => ({ name: tool.name, description: tool.description, inputSchema: JSON.stringify(tool.inputSchema) })) } };
-  if (payload.case === "chatDelta") return { type: "chat_delta", payload: { ...payload.value } };
-  if (payload.case === "chatCompleted") return { type: "chat_completed", payload: { ...payload.value, toolCalls: payload.value.toolCalls.map(toolCallToLegacy) } };
-  if (payload.case === "chatError") return { type: "chat_error", payload: { missionId: payload.value.missionId, error: payload.value.error } };
-  if (payload.case === "dispatchAck") return { type: "dispatch_ack", payload: { ...payload.value, queuedAt: Number(payload.value.queuedAt) } };
-  if (payload.case === "toolCall") return { type: "tool_call", payload: { ...payload.value, toolCalls: payload.value.toolCalls.map(toolCallToLegacy) } };
-  if (payload.case === "toolResult") return { type: "tool_result", payload: { missionId: payload.value.missionId, toolCallId: payload.value.toolCallId, result: dynamicTo(payload.value.result) } };
-  if (payload.case === "toolError") return { type: "tool_error", payload: { ...payload.value } };
-  if (payload.case === "toolList") return { type: "tool_list", payload: { ...payload.value } };
-  if (payload.case === "toolListResp") return { type: "tool_list_resp", payload: { missionId: payload.value.missionId, tools: payload.value.tools.map((tool) => ({ name: tool.name, description: tool.description, inputSchema: JSON.stringify(tool.inputSchema) })) } };
-  throw new Error("Envelope FHS sin payload compatible");
 }
 
 function envelopePayloadBytes(payload: FhsProto.Envelope["payload"]): Uint8Array {
@@ -248,17 +251,39 @@ function verifyEnvelope(envelope: FhsProto.Envelope): boolean {
   return verifySignature(envelope.sourcePeerId, envelopeSignaturePayload(envelope.messageId, envelope.sourcePeerId, envelope.destPeerId, Number(envelope.timestamp), payloadHex), base64(envelope.signature));
 }
 
-export function sendEnvelope(stream: { send(data: Uint8Array): unknown }, type: string, payload: unknown): void {
-  stream.send(encodeEnvelopeFrame(sealEnvelope(envelopeFromLegacy(type, payload as AnyRecord))));
+export function sendEnvelope<T extends keyof PayloadValueByType>(
+  stream: { send(data: Uint8Array): unknown },
+  type: T,
+  payload: PayloadValueByType[T],
+): void;
+export function sendEnvelope(stream: { send(data: Uint8Array): unknown }, type: string, payload: unknown): void;
+export function sendEnvelope(
+  stream: { send(data: Uint8Array): unknown },
+  type: string,
+  payload: unknown,
+): void {
+  if (!(type in payloadCase)) throw new Error(`Tipo FHS no soportado: ${type}`);
+  const protoPayload = payload && typeof payload === "object" && "$typeName" in payload
+    ? payload
+    : payloadFromLocal(type, payload);
+  const envelope = create(FhsProto.EnvelopeSchema, {
+    messageId: crypto.randomUUID(),
+    sourcePeerId: signer?.did ?? "",
+    destPeerId: "",
+    timestamp: BigInt(Date.now()),
+    version: "1",
+    payload: { case: payloadCase[type as keyof PayloadValueByType], value: protoPayload as never },
+  });
+  stream.send(encodeEnvelopeFrame(sealEnvelope(envelope)));
 }
 
-export async function* decodeStream(stream: AsyncIterable<Uint8Array>): AsyncGenerator<{ type: string; payload: AnyRecord }> {
+export async function* decodeStream(stream: AsyncIterable<Uint8Array>): AsyncGenerator<FhsProto.Envelope> {
   const decoded = lp.decode(stream) as unknown as AsyncIterable<{ slice(): Uint8Array }>;
   for await (const chunk of decoded) {
     try {
       const envelope = decodeEnvelope(chunk.slice());
       if (!verifyEnvelope(envelope)) continue;
-      yield legacyFromEnvelope(envelope);
+      yield envelope;
     } catch { /* frame inválido o firma inválida */ }
   }
 }

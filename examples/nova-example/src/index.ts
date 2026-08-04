@@ -101,14 +101,14 @@ async function handleChatStream(
 
   // 1. Leer Handshake del Navigator
   const handshakeResult = await messages.next();
-  if (handshakeResult.done || handshakeResult.value.type !== "handshake") {
+  if (handshakeResult.done || handshakeResult.value.payload.case !== "handshake") {
     sendEnvelope(stream, "error", {
       code: "INVALID_ARGUMENTS",
       message: "esperaba handshake como primer mensaje",
     });
     return;
   }
-  const handshake = handshakeResult.value.payload as unknown as HandshakeMessage;
+  const handshake = handshakeResult.value.payload.value;
   console.log(`[stream] handshake de ${handshake.beacon ?? identity.did}`);
 
   // 2. Responder HandshakeAck
@@ -124,14 +124,14 @@ async function handleChatStream(
 
   // 3. Leer ChatRequest
   const reqResult = await messages.next();
-  if (reqResult.done || reqResult.value.type !== "chat_request") {
+  if (reqResult.done || reqResult.value.payload.case !== "chatRequest") {
     sendEnvelope(stream, "error", {
       code: "INVALID_ARGUMENTS",
       message: "esperaba chat_request",
     });
     return;
   }
-  const req = reqResult.value.payload as unknown as ChatP2pRequestMessage;
+  const req = reqResult.value.payload.value;
   console.log(`[mission] ${req.missionId} — nova razonamiento iniciado`);
 
   // 4. Dispatch ack
