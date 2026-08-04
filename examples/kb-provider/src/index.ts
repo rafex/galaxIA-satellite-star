@@ -10,29 +10,21 @@
 
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { create } from "@bufbuild/protobuf";
 import {
   FHS_STREAM_PROTOCOL,
   TOPIC_NODES_ADVERTISE,
   TOPIC_MISSIONS_OFFER,
   TOPIC_MISSIONS_BID,
   TOPIC_MISSIONS_ASSIGN,
-  type NodeAdvertiseMessage,
-  type MissionOfferMessage,
-  type MissionBidMessage,
-  type MissionAssignMessage,
-  type DhtBeaconRecord,
-  type HandshakeMessage,
-  type HandshakeAckMessage,
-  type ToolP2pListRequestMessage,
-  type ToolP2pListResponseMessage,
-  type ToolP2pCallRequestMessage,
-  type ToolP2pCallResultMessage,
-  type ToolP2pCallErrorMessage,
-  type DispatchP2pAckMessage,
-  type P2pToolDefinition,
-} from "./fhs-p2p-types.js";
+  createProviderBeacon,
+  dynamicValueFromLocal,
+  type TopicMessage,
+  toolDefinitionFromLocal,
+} from "@galaxia/fhs-wire";
 import { fromString } from "uint8arrays";
 import { configureSigner, decodeTopic, dynamicValueToJson, encodeDht, encodeTopic } from "@galaxia/fhs-wire";
+import { FhsProto } from "@rafex/galaxia-fhs-protocol";
 import {
   loadOrCreateFhsIdentity,
   createStarNode,
@@ -61,7 +53,7 @@ const ADVERTISE_INTERVAL_MS = 30_000;
 
 // ── Definición de herramientas que ofrece este satellite ──────────────────────
 
-const KB_TOOLS: P2pToolDefinition[] = [
+const KB_TOOLS = [
   {
     name: "kb_query",
     description: "Recupera fragmentos relevantes de la base de conocimiento estática.",
@@ -78,7 +70,7 @@ const KB_TOOLS: P2pToolDefinition[] = [
 
 // ── PubSub helpers ────────────────────────────────────────────────────────────
 
-function pubsubPublish(node: FhsNode, topic: string, msg: unknown): void {
+function pubsubPublish(node: FhsNode, topic: string, msg: TopicMessage): void {
   const bytes = encodeTopic(topic, msg);
   (node.services.pubsub.publish(topic, bytes) as Promise<unknown>).catch((e: unknown) => {
     console.error(`[pubsub] error en ${topic}:`, e);
@@ -104,7 +96,7 @@ function pubsubSubscribe(
 
 // ── DHT helper ────────────────────────────────────────────────────────────────
 
-async function dhtPut(node: FhsNode, key: string, value: unknown): Promise<void> {
+async function dhtPut(node: FhsNode, key: string, value: FhsProto.DhtBeaconRecord): Promise<void> {
   const keyBytes = fromString(key, "utf8");
   const valueBytes = encodeDht(value);
   const signal = AbortSignal.timeout(5_000);
@@ -125,24 +117,24 @@ async function handleToolStream(
   // 1. Leer Handshake del Navigator
   const handshakeResult = await messages.next();
   if (handshakeResult.done || handshakeResult.value.payload.case !== "handshake") {
-    sendEnvelope(stream, "error", {
-      code: "INVALID_ARGUMENTS",
+    sendEnvelope(stream, "error", create(FhsProto.ErrorMessageSchema, {
+      code: FhsProto.FhsErrorCode.INVALID_ARGUMENTS,
       message: "esperaba handshake como primer mensaje",
-    });
+    }));
     return;
   }
   const handshake = handshakeResult.value.payload.value;
   console.log(`[stream] handshake de ${handshake.beacon ?? identity.did}`);
 
   // 2. Responder HandshakeAck
-  const ack: HandshakeAckMessage = {
+  const ack = create(FhsProto.HandshakeAckMessageSchema, {
     fhsVersion: "0.1",
     leaseSeconds: 300,
     heartbeatSeconds: 30,
-    leaseExpires: Date.now() + 300_000,
+    leaseExpires: BigInt(Date.now() + 300_000),
     acceptedServices: 1,
     trustLevel: "community",
-  };
+  });
   sendEnvelope(stream, "handshake_ack", ack);
 
   // 3. Loop de mensajes: tool_list y/o tool_call
@@ -156,10 +148,10 @@ async function handleToolStream(
       const req = payload.value;
       console.log(`[mission] ${req.missionId} — tool_list solicitado`);
 
-      const resp: ToolP2pListResponseMessage = {
+      const resp = create(FhsProto.ToolListResponseMessageSchema, {
         missionId: req.missionId,
-        tools: KB_TOOLS,
-      };
+        tools: KB_TOOLS.map(toolDefinitionFromLocal),
+      });
       sendEnvelope(stream, "tool_list_resp", resp);
       continue;
     }
@@ -168,21 +160,21 @@ async function handleToolStream(
       const req = payload.value;
       console.log(`[mission] ${req.missionId} — ${req.toolCalls.length} tool_call(s)`);
 
-      const dispatchAck: DispatchP2pAckMessage = {
+      const dispatchAck = create(FhsProto.DispatchAckMessageSchema, {
         missionId: req.missionId,
-        queuedAt: Date.now(),
-      };
+        queuedAt: BigInt(Date.now()),
+      });
       sendEnvelope(stream, "dispatch_ack", dispatchAck);
 
       for (const call of req.toolCalls) {
         try {
           const functionName = call.function?.name ?? "";
           if (functionName !== "kb_query") {
-            const errMsg: ToolP2pCallErrorMessage = {
+            const errMsg = create(FhsProto.ToolCallErrorMessageSchema, {
               missionId: req.missionId,
               toolCallId: call.id,
               error: `Herramienta desconocida: ${functionName}`,
-            };
+            });
             sendEnvelope(stream, "tool_error", errMsg);
             continue;
           }
@@ -192,19 +184,19 @@ async function handleToolStream(
           const topK = typeof args.topK === "number" ? args.topK : 3;
           const chunks = bridge.query(query, topK);
 
-          const successMsg: ToolP2pCallResultMessage = {
+          const successMsg = create(FhsProto.ToolCallResultMessageSchema, {
             missionId: req.missionId,
             toolCallId: call.id,
-            result: JSON.stringify(chunks),
-          };
+            result: dynamicValueFromLocal(chunks),
+          });
           sendEnvelope(stream, "tool_result", successMsg);
           console.log(`[mission] ${req.missionId}/${call.id} — ${chunks.length} fragmentos de KB`);
         } catch (err) {
-          const errMsg: ToolP2pCallErrorMessage = {
+          const errMsg = create(FhsProto.ToolCallErrorMessageSchema, {
             missionId: req.missionId,
             toolCallId: call.id,
             error: err instanceof Error ? err.message : String(err),
-          };
+          });
           sendEnvelope(stream, "tool_error", errMsg);
           console.error(`[mission] ${req.missionId}/${call.id} error:`, err);
         }
@@ -212,10 +204,10 @@ async function handleToolStream(
       continue;
     }
 
-    sendEnvelope(stream, "error", {
-      code: "INVALID_ARGUMENTS",
+    sendEnvelope(stream, "error", create(FhsProto.ErrorMessageSchema, {
+      code: FhsProto.FhsErrorCode.INVALID_ARGUMENTS,
       message: `tipo de mensaje inesperado: ${payload.case ?? "vacío"}`,
-    });
+    }));
     break;
   }
 }
@@ -249,50 +241,49 @@ async function main(): Promise<void> {
   const loaded = bridge.loadContentDirectory(KB_CONTENT_DIR);
   console.log(`[kb] corpus cargado: ${loaded} chunks de ${KB_CONTENT_DIR}`);
 
-  const beaconObj = {
-    type: "satellite",
+  const beacon = createProviderBeacon({
+    did: identity.did,
+    type: FhsProto.ProviderType.SATELLITE,
     name: PROVIDER_NAME,
     description: KB_DESCRIPTION,
     capabilities: ["knowledge.query"],
-    tools: KB_TOOLS.map((t) => t.name),
-  };
+    tags: KB_TOOLS.map((tool) => `tool:${tool.name}`),
+  });
 
-  const beaconPayload: DhtBeaconRecord = {
+  const beaconPayload = create(FhsProto.DhtBeaconRecordSchema, {
     did: identity.did,
-    beacon: JSON.stringify(beaconObj),
+    beacon,
     multiaddrs: multiaddrs(),
-    publishedAt: Date.now(),
-    expiresAt: Date.now() + 24 * 60 * 60 * 1_000,
+    publishedAt: BigInt(Date.now()),
+    expiresAt: BigInt(Date.now() + 24 * 60 * 60 * 1_000),
     fhsVersion: "0.1",
-    signature: new Uint8Array(0),
-  };
+  });
   await dhtPut(node, `/fhs/beacon/${identity.did}`, beaconPayload).catch((e: unknown) => {
     console.warn("[dht] error publicando beacon:", e);
   });
   console.log("[dht] beacon publicado");
 
   const advertise = (): void => {
-    const msg: NodeAdvertiseMessage = {
+    const msg = create(FhsProto.NodeAdvertiseMessageSchema, {
       did: identity.did,
-      beacon: JSON.stringify(beaconObj),
+      beacon,
       multiaddrs: multiaddrs(),
-      timestamp: Date.now(),
+      timestamp: BigInt(Date.now()),
       ttlSeconds: 60,
       trustLevel: "community",
-      signature: new Uint8Array(0),
-    };
+    });
     pubsubPublish(node, TOPIC_NODES_ADVERTISE, msg);
   };
   advertise();
   const advertiseTimer = setInterval(advertise, ADVERTISE_INTERVAL_MS);
 
   pubsubSubscribe(node, TOPIC_MISSIONS_OFFER, (raw) => {
-    const offer = raw as MissionOfferMessage;
+    const offer = raw as FhsProto.MissionOfferMessage;
     if (!offer.missionId) return;
     if (offer.missionType !== "tool_call") return;
     if (!offer.requiredCapabilities?.includes("knowledge.query")) return;
 
-    const bid: MissionBidMessage = {
+    const bid = create(FhsProto.MissionBidMessageSchema, {
       missionId: offer.missionId,
       providerDid: identity.did,
       providerMultiaddrs: multiaddrs(),
@@ -301,15 +292,14 @@ async function main(): Promise<void> {
       reputationScore: 0.5,
       estimatedLatencyMs: 50,
       trustLevel: "community",
-      timestamp: Date.now(),
-      signature: new Uint8Array(0),
-    };
+      timestamp: BigInt(Date.now()),
+    });
     pubsubPublish(node, TOPIC_MISSIONS_BID, bid);
     console.log(`[bid] oferta enviada para mision ${offer.missionId}`);
   });
 
   pubsubSubscribe(node, TOPIC_MISSIONS_ASSIGN, (raw) => {
-    const assign = raw as MissionAssignMessage;
+    const assign = raw as FhsProto.MissionAssignMessage;
     if (assign.assignedProvider === identity.did) {
       console.log(`[assign] mision ${assign.missionId} asignada — esperando stream entrante`);
     }

@@ -7,25 +7,22 @@
  * No hay WebSocket al Atlas, ni hello/register/ping (eliminados en DEC-0088).
  */
 
+import { create } from "@bufbuild/protobuf";
+import { fromString } from "uint8arrays";
 import {
   FHS_STREAM_PROTOCOL,
   TOPIC_NODES_ADVERTISE,
   TOPIC_MISSIONS_OFFER,
   TOPIC_MISSIONS_BID,
   TOPIC_MISSIONS_ASSIGN,
-  type NodeAdvertiseMessage,
-  type MissionOfferMessage,
-  type MissionBidMessage,
-  type MissionAssignMessage,
-  type DhtBeaconRecord,
-  type HandshakeMessage,
-  type HandshakeAckMessage,
-  type ChatP2pRequestMessage,
-  type ChatP2pDeltaMessage,
-  type ChatP2pCompletedMessage,
-} from "./fhs-p2p-types.js";
-import { fromString } from "uint8arrays";
-import { configureSigner, decodeTopic, encodeDht, encodeTopic } from "@galaxia/fhs-wire";
+  configureSigner,
+  createProviderBeacon,
+  decodeTopic,
+  encodeDht,
+  encodeTopic,
+  type TopicMessage,
+} from "@galaxia/fhs-wire";
+import { FhsProto } from "@rafex/galaxia-fhs-protocol";
 import {
   loadOrCreateFhsIdentity,
   createStarNode,
@@ -55,7 +52,7 @@ const ADVERTISE_INTERVAL_MS = 30_000;
 
 // ── PubSub helpers ────────────────────────────────────────────────────────────
 
-function pubsubPublish(node: FhsNode, topic: string, msg: unknown): void {
+function pubsubPublish(node: FhsNode, topic: string, msg: TopicMessage): void {
   const bytes = encodeTopic(topic, msg);
   (node.services.pubsub.publish(topic, bytes) as Promise<unknown>).catch((e: unknown) => {
     console.error(`[pubsub] error en ${topic}:`, e);
@@ -81,7 +78,7 @@ function pubsubSubscribe(
 
 // ── DHT helper ────────────────────────────────────────────────────────────────
 
-async function dhtPut(node: FhsNode, key: string, value: unknown): Promise<void> {
+async function dhtPut(node: FhsNode, key: string, value: FhsProto.DhtBeaconRecord): Promise<void> {
   const keyBytes = fromString(key, "utf8");
   const valueBytes = encodeDht(value);
   const signal = AbortSignal.timeout(5_000);
@@ -102,43 +99,43 @@ async function handleChatStream(
   // 1. Leer Handshake del Navigator
   const handshakeResult = await messages.next();
   if (handshakeResult.done || handshakeResult.value.payload.case !== "handshake") {
-    sendEnvelope(stream, "error", {
-      code: "INVALID_ARGUMENTS",
+    sendEnvelope(stream, "error", create(FhsProto.ErrorMessageSchema, {
+      code: FhsProto.FhsErrorCode.INVALID_ARGUMENTS,
       message: "esperaba handshake como primer mensaje",
-    });
+    }));
     return;
   }
   const handshake = handshakeResult.value.payload.value;
   console.log(`[stream] handshake de ${handshake.beacon ?? identity.did}`);
 
   // 2. Responder HandshakeAck
-  const ack: HandshakeAckMessage = {
+  const ack = create(FhsProto.HandshakeAckMessageSchema, {
     fhsVersion: "0.1",
     leaseSeconds: 300,
     heartbeatSeconds: 30,
-    leaseExpires: Date.now() + 300_000,
+    leaseExpires: BigInt(Date.now() + 300_000),
     acceptedServices: 1,
     trustLevel: "community",
-  };
+  });
   sendEnvelope(stream, "handshake_ack", ack);
 
   // 3. Leer ChatRequest
   const reqResult = await messages.next();
   if (reqResult.done || reqResult.value.payload.case !== "chatRequest") {
-    sendEnvelope(stream, "error", {
-      code: "INVALID_ARGUMENTS",
+    sendEnvelope(stream, "error", create(FhsProto.ErrorMessageSchema, {
+      code: FhsProto.FhsErrorCode.INVALID_ARGUMENTS,
       message: "esperaba chat_request",
-    });
+    }));
     return;
   }
   const req = reqResult.value.payload.value;
   console.log(`[mission] ${req.missionId} — chat iniciado`);
 
   // 4. Dispatch ack
-  sendEnvelope(stream, "dispatch_ack", {
+  sendEnvelope(stream, "dispatch_ack", create(FhsProto.DispatchAckMessageSchema, {
     missionId: req.missionId,
-    queuedAt: Date.now(),
-  });
+    queuedAt: BigInt(Date.now()),
+  }));
 
   // 5. Generar respuesta con streaming LLM
   const generateRequest = {
@@ -168,27 +165,27 @@ async function handleChatStream(
         }
         break;
       }
-      const delta: ChatP2pDeltaMessage = {
+      const delta = create(FhsProto.ChatDeltaMessageSchema, {
         missionId: req.missionId,
         delta: chunk.value,
-      };
+      });
       fullContent += chunk.value;
       sendEnvelope(stream, "chat_delta", delta);
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    sendEnvelope(stream, "chat_error", { missionId: req.missionId, error: errMsg });
+    sendEnvelope(stream, "chat_error", create(FhsProto.ChatErrorMessageSchema, { missionId: req.missionId, error: errMsg }));
     console.error(`[mission] ${req.missionId} error LLM:`, err);
     return;
   }
 
   // 6. Completado
-  const completed: ChatP2pCompletedMessage = {
+  const completed = create(FhsProto.ChatCompletedMessageSchema, {
     missionId: req.missionId,
     content: fullContent,
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     toolCalls,
-  };
+  });
   sendEnvelope(stream, "chat_completed", completed);
   console.log(`[mission] ${req.missionId} completada (${fullContent.length} chars)`);
 }
@@ -219,15 +216,20 @@ async function main(): Promise<void> {
   await new Promise<void>((r) => setTimeout(r, 2_000));
 
   // Publicar DhtBeaconRecord en KadDHT
-  const beaconPayload: DhtBeaconRecord = {
+  const beacon = createProviderBeacon({
     did: identity.did,
-    beacon: JSON.stringify({ type: "star", name: PROVIDER_NAME }),
+    type: FhsProto.ProviderType.STAR,
+    name: PROVIDER_NAME,
+    capabilities: ["chat"],
+  });
+  const beaconPayload = create(FhsProto.DhtBeaconRecordSchema, {
+    did: identity.did,
+    beacon,
     multiaddrs: multiaddrs(),
-    publishedAt: Date.now(),
-    expiresAt: Date.now() + 24 * 60 * 60 * 1_000,
+    publishedAt: BigInt(Date.now()),
+    expiresAt: BigInt(Date.now() + 24 * 60 * 60 * 1_000),
     fhsVersion: "0.1",
-    signature: new Uint8Array(0),
-  };
+  });
   await dhtPut(node, `/fhs/beacon/${identity.did}`, beaconPayload).catch((e: unknown) => {
     console.warn("[dht] error publicando beacon:", e);
   });
@@ -237,15 +239,14 @@ async function main(): Promise<void> {
 
   // Anuncio FloodSub cada 30s
   const advertise = (): void => {
-    const msg: NodeAdvertiseMessage = {
+    const msg = create(FhsProto.NodeAdvertiseMessageSchema, {
       did: identity.did,
-      beacon: JSON.stringify({ type: "star", name: PROVIDER_NAME }),
+      beacon,
       multiaddrs: multiaddrs(),
-      timestamp: Date.now(),
+      timestamp: BigInt(Date.now()),
       ttlSeconds: 60,
       trustLevel: "community",
-      signature: new Uint8Array(0),
-    };
+    });
     pubsubPublish(node, TOPIC_NODES_ADVERTISE, msg);
   };
   advertise();
@@ -253,12 +254,12 @@ async function main(): Promise<void> {
 
   // Escuchar MissionOffer — ofertar si somos un Star con capacidad "chat"
   pubsubSubscribe(node, TOPIC_MISSIONS_OFFER, (raw) => {
-    const offer = raw as MissionOfferMessage;
+    const offer = raw as FhsProto.MissionOfferMessage;
     if (!offer.missionId) return;
     if (offer.missionType !== "chat") return;
     if (!offer.requiredCapabilities?.includes("chat")) return;
 
-    const bid: MissionBidMessage = {
+    const bid = create(FhsProto.MissionBidMessageSchema, {
       missionId: offer.missionId,
       providerDid: identity.did,
       providerMultiaddrs: multiaddrs(),
@@ -268,16 +269,15 @@ async function main(): Promise<void> {
       reputationScore: 0.5,
       estimatedLatencyMs: 200,
       trustLevel: "community",
-      timestamp: Date.now(),
-      signature: new Uint8Array(0),
-    };
+      timestamp: BigInt(Date.now()),
+    });
     pubsubPublish(node, TOPIC_MISSIONS_BID, bid);
     console.log(`[bid] oferta enviada para mision ${offer.missionId}`);
   });
 
   // Escuchar MissionAssign — solo log; el Navigator abre el stream
   pubsubSubscribe(node, TOPIC_MISSIONS_ASSIGN, (raw) => {
-    const assign = raw as MissionAssignMessage;
+    const assign = raw as FhsProto.MissionAssignMessage;
     if (assign.assignedProvider === identity.did) {
       console.log(`[assign] mision ${assign.missionId} asignada — esperando stream entrante`);
     }
