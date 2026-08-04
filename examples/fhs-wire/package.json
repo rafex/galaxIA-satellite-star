@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.13.0",
-    "@rafex/galaxia-fhs-protocol": "npm:@rafex_labs/galaxia-fhs-protocol@^0.1.30",
+    "@rafex/galaxia-fhs-protocol": "npm:@rafex_labs/galaxia-fhs-protocol@^0.1.33",
     "it-length-prefixed": "11.0.1"
   },
   "devDependencies": {
