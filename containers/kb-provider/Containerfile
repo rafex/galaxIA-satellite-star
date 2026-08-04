@@ -49,6 +49,7 @@ ENV KB_PROVIDER_HOST=kb-provider
 ENV FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4006/tls/ws
 ENV TLS_CERT_PATH=/certs/e2e.crt
 ENV TLS_KEY_PATH=/certs/e2e.key
+ENV NODE_EXTRA_CA_CERTS=/certs/e2e.crt
 ENV PROVIDER_ID=did:key:kb-provider-01
 ENV PROVIDER_NAME="KB FHS Provider"
 

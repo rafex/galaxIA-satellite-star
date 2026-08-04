@@ -40,6 +40,7 @@ EXPOSE 4002
 ENV FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4002/tls/ws
 ENV TLS_CERT_PATH=/certs/e2e.crt
 ENV TLS_KEY_PATH=/certs/e2e.key
+ENV NODE_EXTRA_CA_CERTS=/certs/e2e.crt
 ENV FHS_BOOTSTRAP_ADDRS=
 ENV LLAMA_CPP_URL=http://host.containers.internal:43110/v1
 ENV PROVIDER_NAME="Star FHS"
