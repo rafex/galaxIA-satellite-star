@@ -13,8 +13,7 @@ WORKDIR /app
 COPY package*.json .npmrc ./
 COPY examples/star-example/package.json ./examples/star-example/
 
-RUN --mount=type=secret,id=gh_token \
-    export GH_TOKEN="$(cat /run/secrets/gh_token)" && npm ci
+RUN npm install --ignore-scripts
 
 COPY examples/star-example ./examples/star-example
 
