@@ -27,7 +27,7 @@ RUN --mount=type=secret,id=gh_token \
 COPY examples/rag-provider ./examples/rag-provider
 COPY examples/fhs-wire ./examples/fhs-wire
 
-RUN npm run build -w examples/rag-provider
+RUN npm run build -w examples/fhs-wire && npm run build -w examples/rag-provider
 
 FROM docker.io/library/node:22-alpine
 WORKDIR /app
@@ -37,6 +37,8 @@ COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/examples/rag-provider/package.json ./examples/rag-provider/
 COPY --from=builder /app/examples/rag-provider/dist ./examples/rag-provider/dist
+COPY --from=builder /app/examples/fhs-wire/package.json ./examples/fhs-wire/
+COPY --from=builder /app/examples/fhs-wire/dist ./examples/fhs-wire/dist
 
 WORKDIR /app/examples/rag-provider
 EXPOSE 43113

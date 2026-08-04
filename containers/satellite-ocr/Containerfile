@@ -23,7 +23,7 @@ RUN npm install --ignore-scripts
 COPY examples/satellite-ocr-example ./examples/satellite-ocr-example
 COPY examples/fhs-wire ./examples/fhs-wire
 
-RUN npm run build -w examples/satellite-ocr-example
+RUN npm run build -w examples/fhs-wire && npm run build -w examples/satellite-ocr-example
 
 FROM docker.io/library/node:22-bookworm-slim
 WORKDIR /app
@@ -37,6 +37,8 @@ COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/examples/satellite-ocr-example/package.json ./examples/satellite-ocr-example/
 COPY --from=builder /app/examples/satellite-ocr-example/dist ./examples/satellite-ocr-example/dist
+COPY --from=builder /app/examples/fhs-wire/package.json ./examples/fhs-wire/
+COPY --from=builder /app/examples/fhs-wire/dist ./examples/fhs-wire/dist
 
 WORKDIR /app/examples/satellite-ocr-example
 EXPOSE 4003

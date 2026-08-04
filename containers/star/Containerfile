@@ -19,7 +19,7 @@ RUN npm install --ignore-scripts
 COPY examples/star-example ./examples/star-example
 COPY examples/fhs-wire ./examples/fhs-wire
 
-RUN npm run build -w examples/star-example
+RUN npm run build -w examples/fhs-wire && npm run build -w examples/star-example
 
 FROM docker.io/library/node:22-alpine
 WORKDIR /app
@@ -31,6 +31,8 @@ COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/examples/star-example/package.json ./examples/star-example/
 COPY --from=builder /app/examples/star-example/dist ./examples/star-example/dist
+COPY --from=builder /app/examples/fhs-wire/package.json ./examples/fhs-wire/
+COPY --from=builder /app/examples/fhs-wire/dist ./examples/fhs-wire/dist
 
 WORKDIR /app/examples/star-example
 EXPOSE 4002
