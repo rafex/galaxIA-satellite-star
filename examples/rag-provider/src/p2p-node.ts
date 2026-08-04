@@ -61,21 +61,34 @@ export interface StarNodeConfig {
   identity: FhsIdentity;
   listenAddrs?: string[];
   bootstrapAddrs?: string[];
+  tlsCertPath?: string;
+  tlsKeyPath?: string;
 }
 
 export async function createStarNode(config: StarNodeConfig): Promise<FhsNode> {
   const {
     identity,
-    listenAddrs = ["/ip4/0.0.0.0/tcp/0/ws"],
+    listenAddrs = ["/ip4/0.0.0.0/tcp/0/tls/ws"],
     bootstrapAddrs = [],
+    tlsCertPath = process.env.TLS_CERT_PATH,
+    tlsKeyPath = process.env.TLS_KEY_PATH,
   } = config;
+
+  const tlsRequired = listenAddrs.some((address) => address.includes("/tls/ws"));
+  if (tlsRequired && (!tlsCertPath || !tlsKeyPath)) {
+    throw new Error("Star provider requiere TLS_CERT_PATH y TLS_KEY_PATH para escuchar en /tls/ws");
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-explicit-any
   const node: FhsNode = await createLibp2p({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     privateKey: identity.privateKey as any,
     addresses: { listen: listenAddrs },
-    transports: [webSockets()],
+    transports: [
+      tlsCertPath && tlsKeyPath
+        ? webSockets({ https: { cert: readFileSync(tlsCertPath), key: readFileSync(tlsKeyPath) } })
+        : webSockets(),
+    ],
     connectionEncrypters: [noise()],
     streamMuxers: [yamux()],
     services: {

@@ -45,7 +45,9 @@ EXPOSE 43113
 
 ENV RAG_PROVIDER_PORT=43113
 ENV RAG_PROVIDER_HOST=rag-provider
-ENV REGISTRY_URL=ws://atlas:8081/fhs/v1/ws
+ENV FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4005/tls/ws
+ENV TLS_CERT_PATH=/certs/e2e.crt
+ENV TLS_KEY_PATH=/certs/e2e.key
 ENV PROVIDER_ID=did:key:rag-provider-01
 ENV PROVIDER_NAME="RAG FHS Provider"
 

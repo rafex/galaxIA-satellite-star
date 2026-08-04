@@ -5,9 +5,9 @@
 # ya tienes un Atlas corriendo y alcanzable por red (misma máquina o LAN) y
 # solo levanta los providers de este repo.
 #
-# Configura PROVIDER_REGISTRY_URL con la URL real de tu Atlas antes de
+# Configura FHS_BOOTSTRAP_ADDRS con una multiaddr TLS real de Atlas antes de
 # levantar, por ejemplo:
-#   PROVIDER_REGISTRY_URL=ws://192.168.3.137:30083/fhs/v1/ws podman-compose up -d --build
+#   FHS_BOOTSTRAP_ADDRS=/ip4/192.168.1.139/tcp/4001/tls/ws podman-compose up -d --build
 #
 # Si Atlas corre en la misma máquina fuera de contenedores, usa
 # host.containers.internal (podman) / host.docker.internal (docker).
@@ -33,15 +33,18 @@ services:
     ports:
       - "4002:4002"
     environment:
-      - FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4002/ws
+      - FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4002/tls/ws
+      - TLS_CERT_PATH=/certs/e2e.crt
+      - TLS_KEY_PATH=/certs/e2e.key
       # Multiaddr del Atlas bootstrap — levantar Atlas primero y anotar su PeerID
-      # Ejemplo: /ip4/192.168.1.139/tcp/4001/ws/p2p/<PeerID>
+      # Ejemplo: /ip4/192.168.1.139/tcp/4001/tls/ws
       - FHS_BOOTSTRAP_ADDRS=${FHS_BOOTSTRAP_ADDRS:-}
       - LLAMA_CPP_URL=${LLAMA_CPP_URL:-http://host.containers.internal:43110/v1}
       - PROVIDER_NAME=${PROVIDER_NAME:-Star FHS Bastion}
       - IDENTITY_KEY_PATH=/data/.fhs-identity-star.json
     volumes:
       - star-data:/data
+      - ${CERTS_DIR:-../certs}:/certs:ro
     extra_hosts:
       - "host.containers.internal:host-gateway"
     restart: unless-stopped
@@ -56,13 +59,16 @@ services:
     ports:
       - "4003:4003"
     environment:
-      - FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4003/ws
+      - FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4003/tls/ws
+      - TLS_CERT_PATH=/certs/e2e.crt
+      - TLS_KEY_PATH=/certs/e2e.key
       - FHS_BOOTSTRAP_ADDRS=${FHS_BOOTSTRAP_ADDRS:-}
       - FHS_ANNOUNCE_ADDRS=${FHS_ANNOUNCE_ADDRS:-}
       - PROVIDER_NAME=${PROVIDER_NAME:-Satellite OCR FHS}
       - IDENTITY_KEY_PATH=/data/.fhs-identity-ocr.json
     volumes:
       - ocr-data:/data
+      - ${CERTS_DIR:-../certs}:/certs:ro
     restart: unless-stopped
 
   rag-provider:
@@ -75,12 +81,15 @@ services:
     ports:
       - "4005:4005"
     environment:
-      - FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4005/ws
+      - FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4005/tls/ws
+      - TLS_CERT_PATH=/certs/e2e.crt
+      - TLS_KEY_PATH=/certs/e2e.key
       - FHS_BOOTSTRAP_ADDRS=${FHS_BOOTSTRAP_ADDRS:-}
       - PROVIDER_NAME=${PROVIDER_NAME:-RAG Provider FHS}
       - IDENTITY_KEY_PATH=/data/.fhs-identity-rag.json
     volumes:
       - rag-data:/data
+      - ${CERTS_DIR:-../certs}:/certs:ro
     extra_hosts:
       - "host.containers.internal:host-gateway"
     restart: unless-stopped
@@ -95,13 +104,16 @@ services:
     ports:
       - "4006:4006"
     environment:
-      - FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4006/ws
+      - FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4006/tls/ws
+      - TLS_CERT_PATH=/certs/e2e.crt
+      - TLS_KEY_PATH=/certs/e2e.key
       - FHS_BOOTSTRAP_ADDRS=${FHS_BOOTSTRAP_ADDRS:-}
       - PROVIDER_NAME=${PROVIDER_NAME:-KB Provider FHS}
       - IDENTITY_KEY_PATH=/data/.fhs-identity-kb.json
       - KB_CONTENT_DIR=/data/content
     volumes:
       - kb-data:/data
+      - ${CERTS_DIR:-../certs}:/certs:ro
     extra_hosts:
       - "host.containers.internal:host-gateway"
     restart: unless-stopped

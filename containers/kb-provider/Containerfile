@@ -46,7 +46,9 @@ EXPOSE 43114
 
 ENV KB_PROVIDER_PORT=43114
 ENV KB_PROVIDER_HOST=kb-provider
-ENV REGISTRY_URL=ws://atlas:8081/fhs/v1/ws
+ENV FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4006/tls/ws
+ENV TLS_CERT_PATH=/certs/e2e.crt
+ENV TLS_KEY_PATH=/certs/e2e.key
 ENV PROVIDER_ID=did:key:kb-provider-01
 ENV PROVIDER_NAME="KB FHS Provider"
 

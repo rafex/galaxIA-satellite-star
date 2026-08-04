@@ -43,7 +43,9 @@ COPY --from=builder /app/examples/fhs-wire/dist ./examples/fhs-wire/dist
 WORKDIR /app/examples/satellite-ocr-example
 EXPOSE 4003
 
-ENV FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4003/ws
+ENV FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4003/tls/ws
+ENV TLS_CERT_PATH=/certs/e2e.crt
+ENV TLS_KEY_PATH=/certs/e2e.key
 ENV FHS_BOOTSTRAP_ADDRS=
 ENV FHS_ANNOUNCE_ADDRS=
 ENV PROVIDER_NAME="Satellite OCR FHS"
