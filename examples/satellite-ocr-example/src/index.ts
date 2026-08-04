@@ -28,7 +28,7 @@ import {
   type FhsNode,
   type FhsIdentity,
 } from "./p2p-node.js";
-import { sendEnvelope, decodeStream } from "./stream-codec.js";
+import { sendEnvelope, decodeStream } from "@galaxia/fhs-wire";
 import { OcrBridge } from "./ocr-bridge.js";
 
 // ── Configuración desde variables de entorno ──────────────────────────────────
