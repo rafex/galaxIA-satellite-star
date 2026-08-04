@@ -98,8 +98,29 @@ export async function createStarNode(config: StarNodeConfig): Promise<FhsNode> {
   await node.start();
 
   for (const addr of bootstrapAddrs) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    node.dial(multiaddr(addr) as any).catch(() => {});
+    const target = multiaddr(addr);
+    let retryTimer: ReturnType<typeof setInterval> | undefined;
+
+    const dialBootstrap = async (): Promise<void> => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await node.dial(target as any);
+        if (retryTimer) clearInterval(retryTimer);
+        retryTimer = undefined;
+        console.log(`[p2p] bootstrap conectado: ${addr}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[p2p] bootstrap no disponible (${addr}): ${message}`);
+      }
+    };
+
+    // El contenedor puede arrancar antes de que Atlas esté listo o antes de
+    // que el operador abra el puerto en el firewall. Mantener el reintento
+    // evita que el provider quede aislado por un único fallo de arranque.
+    void dialBootstrap();
+    retryTimer = setInterval(() => {
+      void dialBootstrap();
+    }, 10_000);
   }
 
   return node;

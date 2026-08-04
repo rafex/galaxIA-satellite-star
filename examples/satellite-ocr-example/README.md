@@ -23,3 +23,24 @@ npm run dev -w examples/satellite-ocr-example
 ```
 
 El contenedor incluye Tesseract y no requiere un servicio adicional ni puertos HTTP.
+
+## Diagnóstico de descubrimiento P2P
+
+El Satellite debe poder abrir TCP hacia el multiaddr de bootstrap de Atlas
+(normalmente `192.168.1.139:4001`) y el Navigator debe poder abrir TCP hacia el
+Satellite (`192.168.1.167:4003`). Si el firewall del bastion no permite el
+bootstrap, el contenedor OCR seguirá activo pero no aparecerá en el scope y el
+Navigator mostrará `No hay proveedores de OCR disponibles en tu scope`.
+
+En el bastion, permitir el bootstrap desde la red GalaxIA:
+
+```bash
+sudo ufw allow from 192.168.1.0/24 to any port 4001 proto tcp comment 'FHS Atlas P2P'
+```
+
+El provider reintenta el bootstrap cada 10 segundos después de un fallo de
+arranque. Tras abrir el puerto, debe aparecer en sus logs:
+
+```text
+[p2p] bootstrap conectado: /ip4/192.168.1.139/tcp/4001/ws/p2p/<atlas-peer-id>
+```
