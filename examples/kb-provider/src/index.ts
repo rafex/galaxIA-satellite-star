@@ -31,7 +31,8 @@ import {
   type DispatchP2pAckMessage,
   type P2pToolDefinition,
 } from "./fhs-p2p-types.js";
-import { fromString, toString } from "uint8arrays";
+import { fromString } from "uint8arrays";
+import { decodeTopic, encodeDht, encodeTopic } from "@galaxia/fhs-wire";
 import {
   loadOrCreateFhsIdentity,
   createStarNode,
@@ -78,7 +79,7 @@ const KB_TOOLS: P2pToolDefinition[] = [
 // ── PubSub helpers ────────────────────────────────────────────────────────────
 
 function pubsubPublish(node: FhsNode, topic: string, msg: unknown): void {
-  const bytes = fromString(JSON.stringify(msg), "utf8");
+  const bytes = encodeTopic(topic, msg);
   (node.services.pubsub.publish(topic, bytes) as Promise<unknown>).catch((e: unknown) => {
     console.error(`[pubsub] error en ${topic}:`, e);
   });
@@ -95,7 +96,7 @@ function pubsubSubscribe(
     (evt: { detail: { topic: string; data: Uint8Array } }) => {
       if (evt.detail.topic !== topic) return;
       try {
-        handler(JSON.parse(toString(evt.detail.data, "utf8")) as unknown);
+        handler(decodeTopic(topic, evt.detail.data));
       } catch { /* ignorar frames malformados */ }
     }
   );
@@ -105,7 +106,7 @@ function pubsubSubscribe(
 
 async function dhtPut(node: FhsNode, key: string, value: unknown): Promise<void> {
   const keyBytes = fromString(key, "utf8");
-  const valueBytes = fromString(JSON.stringify(value), "utf8");
+  const valueBytes = encodeDht(value);
   const signal = AbortSignal.timeout(5_000);
   for await (const _ of node.services.dht.put(keyBytes, valueBytes, { signal })) {
     void _;
@@ -130,7 +131,7 @@ async function handleToolStream(
     });
     return;
   }
-  const handshake = handshakeResult.value.payload as HandshakeMessage;
+  const handshake = handshakeResult.value.payload as unknown as HandshakeMessage;
   console.log(`[stream] handshake de ${handshake.beacon ?? identity.did}`);
 
   // 2. Responder HandshakeAck
@@ -152,7 +153,7 @@ async function handleToolStream(
     const { type, payload } = frame.value;
 
     if (type === "tool_list") {
-      const req = payload as ToolP2pListRequestMessage;
+      const req = payload as unknown as ToolP2pListRequestMessage;
       console.log(`[mission] ${req.missionId} — tool_list solicitado`);
 
       const resp: ToolP2pListResponseMessage = {
@@ -164,7 +165,7 @@ async function handleToolStream(
     }
 
     if (type === "tool_call") {
-      const req = payload as ToolP2pCallRequestMessage;
+      const req = payload as unknown as ToolP2pCallRequestMessage;
       console.log(`[mission] ${req.missionId} — ${req.toolCalls.length} tool_call(s)`);
 
       const dispatchAck: DispatchP2pAckMessage = {
