@@ -42,7 +42,7 @@ export async function loadOrCreateFhsIdentity(keyPath: string): Promise<FhsIdent
     const privateKey = privateKeyFromProtobuf(bytes);
     const peerId = peerIdFromPrivateKey(privateKey);
     const pubKeyBytes = (privateKey.publicKey as { raw: Uint8Array }).raw;
-    const did = `did:key:z${base58btc.baseEncode(pubKeyBytes)}`;
+    const did = `did:key:z${base58btc.baseEncode(Uint8Array.from([0xed, 0x01, ...pubKeyBytes]))}`;
     return { did, peerId, privateKey };
   }
 
@@ -53,7 +53,7 @@ export async function loadOrCreateFhsIdentity(keyPath: string): Promise<FhsIdent
 
   const peerId = peerIdFromPrivateKey(privateKey);
   const pubKeyBytes = (privateKey.publicKey as { raw: Uint8Array }).raw;
-  const did = `did:key:z${base58btc.baseEncode(pubKeyBytes)}`;
+  const did = `did:key:z${base58btc.baseEncode(Uint8Array.from([0xed, 0x01, ...pubKeyBytes]))}`;
   return { did, peerId, privateKey };
 }
 

@@ -6,13 +6,21 @@
  */
 
 import { create } from "@bufbuild/protobuf";
+import { createHash } from "node:crypto";
 import * as lp from "it-length-prefixed";
 import {
   FhsProto,
   decodeEnvelope,
   decodeMessage,
+  envelopeSignaturePayload,
   encodeEnvelopeFrame,
   encodeMessage,
+  dhtBeaconSignaturePayload,
+  missionAssignSignaturePayload,
+  missionBidSignaturePayload,
+  missionOfferSignaturePayload,
+  nodeAdvertiseSignaturePayload,
+  verifySignature,
 } from "@rafex/galaxia-fhs-protocol";
 
 export const FHS_STREAM_PROTOCOL = "/fhs/v1/0.1.0";
@@ -23,6 +31,30 @@ export const TOPIC_MISSIONS_ASSIGN = "fhs/v1/missions/assign";
 export const TOPIC_REPUTATION_UPDATE = "fhs/v1/reputation/update";
 
 type AnyRecord = Record<string, unknown>;
+
+let signer: { did: string; privateKey: { sign(data: Uint8Array): Uint8Array } } | undefined;
+
+export function configureSigner(did: string, privateKey: unknown): void {
+  signer = { did, privateKey: privateKey as { sign(data: Uint8Array): Uint8Array } };
+}
+
+function sign(payload: string): Uint8Array {
+  if (!signer) throw new Error("FHS wire signer no configurado");
+  return signer.privateKey.sign(new TextEncoder().encode(payload));
+}
+
+function base64(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString("base64");
+}
+
+function sha256(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function signedBeacon(beacon: FhsProto.Beacon): { beacon: FhsProto.Beacon; hash: string } {
+  const bytes = encodeMessage(FhsProto.BeaconSchema, beacon);
+  return { beacon, hash: sha256(bytes) };
+}
 
 export type FhsEnvelope = { type: string; payload: AnyRecord };
 
@@ -142,7 +174,7 @@ function messageToLegacy(value: FhsProto.Message): AnyRecord {
 }
 
 function envelopeFromLegacy(type: string, payload: AnyRecord): FhsProto.Envelope {
-  const base = { messageId: crypto.randomUUID(), sourcePeerId: "", destPeerId: "", timestamp: BigInt(Date.now()), version: "1", signature: new Uint8Array() };
+  const base = { messageId: crypto.randomUUID(), sourcePeerId: signer?.did ?? "", destPeerId: "", timestamp: BigInt(Date.now()), version: "1", signature: new Uint8Array() };
   switch (type) {
     case "handshake": return create(FhsProto.EnvelopeSchema, { ...base, payload: { case: "handshake", value: create(FhsProto.HandshakeMessageSchema, { fhsVersion: String(payload.fhsVersion ?? "0.1"), listenAddrs: (payload.listenAddrs ?? []) as string[], beacon: beaconFromLegacy(payload.beacon) }) } });
     case "handshake_ack": return create(FhsProto.EnvelopeSchema, { ...base, payload: { case: "handshakeAck", value: create(FhsProto.HandshakeAckMessageSchema, { fhsVersion: String(payload.fhsVersion ?? "0.1"), leaseSeconds: Number(payload.leaseSeconds ?? 300), heartbeatSeconds: Number(payload.heartbeatSeconds ?? 30), leaseExpires: BigInt(Number(payload.leaseExpires ?? Date.now() + 300000)), acceptedServices: Number(payload.acceptedServices ?? 0), trustLevel: String(payload.trustLevel ?? "community") }) } });
@@ -179,14 +211,55 @@ function legacyFromEnvelope(envelope: FhsProto.Envelope): { type: string; payloa
   throw new Error("Envelope FHS sin payload compatible");
 }
 
+function envelopePayloadBytes(payload: FhsProto.Envelope["payload"]): Uint8Array {
+  if (payload.case === undefined) return new Uint8Array();
+  const schemas = {
+    handshake: FhsProto.HandshakeMessageSchema,
+    handshakeAck: FhsProto.HandshakeAckMessageSchema,
+    ping: FhsProto.PingMessageSchema,
+    pong: FhsProto.PongMessageSchema,
+    error: FhsProto.ErrorMessageSchema,
+    chatRequest: FhsProto.ChatRequestMessageSchema,
+    chatCancel: FhsProto.ChatCancelMessageSchema,
+    chatDelta: FhsProto.ChatDeltaMessageSchema,
+    chatCompleted: FhsProto.ChatCompletedMessageSchema,
+    chatError: FhsProto.ChatErrorMessageSchema,
+    dispatchAck: FhsProto.DispatchAckMessageSchema,
+    toolCall: FhsProto.ToolCallRequestMessageSchema,
+    toolCancel: FhsProto.ToolCancelMessageSchema,
+    toolResult: FhsProto.ToolCallResultMessageSchema,
+    toolError: FhsProto.ToolCallErrorMessageSchema,
+    toolList: FhsProto.ToolListRequestMessageSchema,
+    toolListResp: FhsProto.ToolListResponseMessageSchema,
+  } as const;
+  return encodeMessage(schemas[payload.case as keyof typeof schemas], payload.value as never);
+}
+
+function sealEnvelope(envelope: FhsProto.Envelope): FhsProto.Envelope {
+  if (!signer) throw new Error("FHS wire signer no configurado");
+  const payloadHex = Buffer.from(envelopePayloadBytes(envelope.payload)).toString("hex");
+  const signature = sign(envelopeSignaturePayload(envelope.messageId, envelope.sourcePeerId, envelope.destPeerId, Number(envelope.timestamp), payloadHex));
+  return create(FhsProto.EnvelopeSchema, { ...envelope, signature });
+}
+
+function verifyEnvelope(envelope: FhsProto.Envelope): boolean {
+  if (!envelope.sourcePeerId || envelope.signature.byteLength === 0) return false;
+  const payloadHex = Buffer.from(envelopePayloadBytes(envelope.payload)).toString("hex");
+  return verifySignature(envelope.sourcePeerId, envelopeSignaturePayload(envelope.messageId, envelope.sourcePeerId, envelope.destPeerId, Number(envelope.timestamp), payloadHex), base64(envelope.signature));
+}
+
 export function sendEnvelope(stream: { send(data: Uint8Array): unknown }, type: string, payload: unknown): void {
-  stream.send(encodeEnvelopeFrame(envelopeFromLegacy(type, payload as AnyRecord)));
+  stream.send(encodeEnvelopeFrame(sealEnvelope(envelopeFromLegacy(type, payload as AnyRecord))));
 }
 
 export async function* decodeStream(stream: AsyncIterable<Uint8Array>): AsyncGenerator<{ type: string; payload: AnyRecord }> {
   const decoded = lp.decode(stream) as unknown as AsyncIterable<{ slice(): Uint8Array }>;
   for await (const chunk of decoded) {
-    try { yield legacyFromEnvelope(decodeEnvelope(chunk.slice())); } catch { /* frame inválido */ }
+    try {
+      const envelope = decodeEnvelope(chunk.slice());
+      if (!verifyEnvelope(envelope)) continue;
+      yield legacyFromEnvelope(envelope);
+    } catch { /* frame inválido o firma inválida */ }
   }
 }
 
@@ -201,18 +274,55 @@ function topicSchema(topic: string) {
 export function encodeTopic(topic: string, input: unknown): Uint8Array {
   const value = input as AnyRecord;
   const schema = topicSchema(topic);
-  if (topic === TOPIC_NODES_ADVERTISE) return encodeMessage(schema, create(schema, { ...value, beacon: beaconFromLegacy(value.beacon), timestamp: BigInt(Number(value.timestamp ?? Date.now())) }));
-  if (topic === TOPIC_MISSIONS_OFFER) return encodeMessage(schema, create(schema, { ...value, preferredModel: String(value.preferredModel ?? ""), bidDeadlineMs: BigInt(Number(value.bidDeadlineMs)), timestamp: BigInt(Number(value.timestamp ?? Date.now())) }));
-  if (topic === TOPIC_MISSIONS_BID) return encodeMessage(schema, create(schema, { ...value, timestamp: BigInt(Number(value.timestamp ?? Date.now())) }));
-  return encodeMessage(schema, create(schema, { ...value, timestamp: BigInt(Number(value.timestamp ?? Date.now())) }));
+  if (topic === TOPIC_NODES_ADVERTISE) {
+    const timestamp = BigInt(Number(value.timestamp ?? Date.now()));
+    const ttlSeconds = Number(value.ttlSeconds ?? 60);
+    const beacon = signedBeacon(beaconFromLegacy(value.beacon));
+    const unsigned = create(schema, { ...value, beacon: beacon.beacon, timestamp, ttlSeconds, signature: new Uint8Array() });
+    const signature = signer ? sign(nodeAdvertiseSignaturePayload(String(value.did), beacon.hash, Number(timestamp), ttlSeconds)) : new Uint8Array();
+    return encodeMessage(schema, create(schema, { ...unsigned, signature }));
+  }
+  if (topic === TOPIC_MISSIONS_OFFER) {
+    const timestamp = BigInt(Number(value.timestamp ?? Date.now()));
+    const bidDeadlineMs = BigInt(Number(value.bidDeadlineMs));
+    const unsigned = create(schema, { ...value, preferredModel: String(value.preferredModel ?? ""), bidDeadlineMs, timestamp, signature: new Uint8Array() });
+    const signature = signer ? sign(missionOfferSignaturePayload(String(value.missionId), String(value.navigatorDid), String(value.missionType), Number(bidDeadlineMs), Number(timestamp))) : new Uint8Array();
+    return encodeMessage(schema, create(schema, { ...unsigned, signature }));
+  }
+  if (topic === TOPIC_MISSIONS_BID) {
+    const timestamp = BigInt(Number(value.timestamp ?? Date.now()));
+    const unsigned = create(schema, { ...value, timestamp, signature: new Uint8Array() });
+    const signature = signer ? sign(missionBidSignaturePayload(String(value.missionId), String(value.providerDid), (value.offeredCapabilities as string[]) ?? [], Number(timestamp))) : new Uint8Array();
+    return encodeMessage(schema, create(schema, { ...unsigned, signature }));
+  }
+  const timestamp = BigInt(Number(value.timestamp ?? Date.now()));
+  const unsigned = create(schema, { ...value, timestamp, signature: new Uint8Array() });
+  const signature = signer ? sign(missionAssignSignaturePayload(String(value.missionId), String(value.navigatorDid), String(value.assignedProvider), Number(timestamp))) : new Uint8Array();
+  return encodeMessage(schema, create(schema, { ...unsigned, signature }));
 }
 
 export function decodeTopic(topic: string, bytes: Uint8Array): AnyRecord {
   const value = decodeMessage(topicSchema(topic), bytes) as AnyRecord;
+  const signature = value.signature as Uint8Array;
+  const valid = signature.byteLength > 0 && (() => {
+    if (topic === TOPIC_NODES_ADVERTISE) {
+      const beaconBytes = encodeMessage(FhsProto.BeaconSchema, value.beacon as FhsProto.Beacon);
+      return verifySignature(String(value.did), nodeAdvertiseSignaturePayload(String(value.did), sha256(beaconBytes), Number(value.timestamp), Number(value.ttlSeconds)), base64(signature));
+    }
+    if (topic === TOPIC_MISSIONS_OFFER) return verifySignature(String(value.navigatorDid), missionOfferSignaturePayload(String(value.missionId), String(value.navigatorDid), String(value.missionType), Number(value.bidDeadlineMs), Number(value.timestamp)), base64(signature));
+    if (topic === TOPIC_MISSIONS_BID) return verifySignature(String(value.providerDid), missionBidSignaturePayload(String(value.missionId), String(value.providerDid), (value.offeredCapabilities as string[]) ?? [], Number(value.timestamp)), base64(signature));
+    return verifySignature(String(value.navigatorDid), missionAssignSignaturePayload(String(value.missionId), String(value.navigatorDid), String(value.assignedProvider), Number(value.timestamp)), base64(signature));
+  })();
+  if (!valid) throw new Error(`Firma FHS inválida en topic ${topic}`);
   return { ...value, timestamp: Number(value.timestamp), bidDeadlineMs: value.bidDeadlineMs === undefined ? undefined : Number(value.bidDeadlineMs), beacon: topic === TOPIC_NODES_ADVERTISE ? beaconToLegacy(value.beacon as FhsProto.Beacon) : undefined };
 }
 
 export function encodeDht(value: unknown): Uint8Array {
   const input = value as AnyRecord;
-  return encodeMessage(FhsProto.DhtBeaconRecordSchema, create(FhsProto.DhtBeaconRecordSchema, { ...input, beacon: beaconFromLegacy(input.beacon), publishedAt: BigInt(Number(input.publishedAt)), expiresAt: BigInt(Number(input.expiresAt)) }));
+  const publishedAt = BigInt(Number(input.publishedAt));
+  const expiresAt = BigInt(Number(input.expiresAt));
+  const beacon = signedBeacon(beaconFromLegacy(input.beacon));
+  const unsigned = create(FhsProto.DhtBeaconRecordSchema, { ...input, beacon: beacon.beacon, publishedAt, expiresAt, signature: new Uint8Array() });
+  const signature = signer ? sign(dhtBeaconSignaturePayload(String(input.did), beacon.hash, Number(publishedAt), Number(expiresAt))) : new Uint8Array();
+  return encodeMessage(FhsProto.DhtBeaconRecordSchema, create(FhsProto.DhtBeaconRecordSchema, { ...unsigned, signature }));
 }

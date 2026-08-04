@@ -26,7 +26,7 @@ import {
   type ChatP2pCompletedMessage,
 } from "./fhs-p2p-types.js";
 import { fromString } from "uint8arrays";
-import { decodeTopic, encodeDht, encodeTopic } from "@galaxia/fhs-wire";
+import { configureSigner, decodeTopic, encodeDht, encodeTopic } from "@galaxia/fhs-wire";
 import {
   loadOrCreateFhsIdentity,
   createStarNode,
@@ -174,6 +174,7 @@ async function handleChatStream(
 
 async function main(): Promise<void> {
   const identity = await loadOrCreateFhsIdentity(IDENTITY_KEY_PATH);
+  configureSigner(identity.did, identity.privateKey);
   console.log(`[nova] DID: ${identity.did}`);
 
   const node: FhsNode = await createStarNode({
