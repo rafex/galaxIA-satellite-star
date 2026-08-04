@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Contenedor del Star (LLM Provider) FHS P2P — DEC-0088
-# Ciclo P2P completo: bootstrap → DHT beacon → FloodSub → offer/bid/assign → stream.
+# Ciclo P2P completo: bootstrap → DHT beacon → GossipSub → offer/bid/assign → stream.
 # Puerto 4002: WebSocket libp2p (misiones chat directas).
 #
 # @rafex/galaxia-fhs-protocol se instala desde GitHub Packages.

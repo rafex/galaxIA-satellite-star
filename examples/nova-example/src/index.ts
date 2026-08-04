@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Nova Provider FHS P2P (DEC-0088, SPEC-NOVA-0001, DEC-0055).
- * Ciclo completo: bootstrap → DHT beacon → FloodSub advertise →
+ * Ciclo completo: bootstrap → DHT beacon → GossipSub advertise →
  * offer/bid/assign → stream directo con Navigator → ReasoningLoop → chat_completed.
  *
  * No hay WebSocket al Atlas, ni hello/register/ping (eliminados en DEC-0088).
@@ -216,7 +216,7 @@ async function main(): Promise<void> {
   const bridge = new LlmBridge(LLAMA_CPP_URL);
   const loop = new ReasoningLoop(bridge, MAX_REASONING_STEPS);
 
-  // Anuncio FloodSub cada 30s
+  // Anuncio GossipSub cada 30s
   const advertise = (): void => {
     const msg = create(FhsProto.NodeAdvertiseMessageSchema, {
       did: identity.did,

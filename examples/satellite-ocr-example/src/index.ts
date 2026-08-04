@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Satellite OCR Provider FHS P2P (DEC-0088).
- * Ciclo completo: bootstrap → DHT beacon → FloodSub advertise →
+ * Ciclo completo: bootstrap → DHT beacon → GossipSub advertise →
  * offer/bid/assign → stream directo con Navigator → tool_list / tool_call → tool_result.
  *
  * No hay WebSocket al Atlas, ni hello/register/ping (eliminados en DEC-0088).
@@ -277,7 +277,7 @@ async function main(): Promise<void> {
 
   const bridge = new OcrBridge(OCR_SERVICE_URL, OCR_API_KEY);
 
-  // Anuncio FloodSub cada 30s
+  // Anuncio GossipSub cada 30s
   const advertise = (): void => {
     const msg = create(FhsProto.NodeAdvertiseMessageSchema, {
       did: identity.did,

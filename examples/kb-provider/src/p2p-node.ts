@@ -7,7 +7,7 @@ import { createLibp2p } from "libp2p";
 import { webSockets } from "@libp2p/websockets";
 import { noise } from "@chainsafe/libp2p-noise";
 import { yamux } from "@chainsafe/libp2p-yamux";
-import { floodsub } from "@libp2p/floodsub";
+import { gossipsub } from "@libp2p/gossipsub";
 import { kadDHT } from "@libp2p/kad-dht";
 import { identify } from "@libp2p/identify";
 import { ping } from "@libp2p/ping";
@@ -86,7 +86,7 @@ export async function createStarNode(config: StarNodeConfig): Promise<FhsNode> {
         validators: { fhs: (_k: Uint8Array, _v: Uint8Array) => {} },
         selectors: { fhs: (_k: Uint8Array, _rs: Uint8Array[]) => 0 },
       }),
-      pubsub: floodsub(),
+      pubsub: gossipsub(),
     },
   });
 

@@ -14,7 +14,7 @@
     "@chainsafe/libp2p-noise": "17.0.0",
     "@chainsafe/libp2p-yamux": "8.0.1",
     "@libp2p/crypto": "5.1.22",
-    "@libp2p/floodsub": "^11.0.28",
+    "@libp2p/gossipsub": "^16.1.1",
     "@libp2p/identify": "^4.1.12",
     "@libp2p/ping": "^3.1.11",
     "@libp2p/interface": "^3.2.5",

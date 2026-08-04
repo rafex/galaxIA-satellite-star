@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * KB Provider FHS P2P (DEC-0088, SPEC-KB-0001).
- * Ciclo completo: bootstrap → DHT beacon → FloodSub advertise →
+ * Ciclo completo: bootstrap → DHT beacon → GossipSub advertise →
  * offer/bid/assign → stream directo con Navigator → tool_list / tool_call → tool_result.
  *
  * No hay WebSocket al Atlas, ni hello/register/ping (eliminados en DEC-0088).
