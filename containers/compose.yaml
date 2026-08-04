@@ -58,6 +58,7 @@ services:
     environment:
       - FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4003/ws
       - FHS_BOOTSTRAP_ADDRS=${FHS_BOOTSTRAP_ADDRS:-}
+      - FHS_ANNOUNCE_ADDRS=${FHS_ANNOUNCE_ADDRS:-}
       - PROVIDER_NAME=${PROVIDER_NAME:-Satellite OCR FHS}
       - IDENTITY_KEY_PATH=/data/.fhs-identity-ocr.json
     volumes:

@@ -41,6 +41,9 @@ const FHS_BOOTSTRAP_ADDRS = process.env.FHS_BOOTSTRAP_ADDRS
 const FHS_LISTEN_ADDRS = process.env.FHS_LISTEN_ADDRS
   ? process.env.FHS_LISTEN_ADDRS.split(",").map((a) => a.trim())
   : ["/ip4/0.0.0.0/tcp/4003/ws"];
+const FHS_ANNOUNCE_ADDRS = process.env.FHS_ANNOUNCE_ADDRS
+  ? process.env.FHS_ANNOUNCE_ADDRS.split(",").map((a) => a.trim())
+  : undefined;
 const PROVIDER_NAME = process.env.PROVIDER_NAME ?? "Satellite OCR FHS";
 const ADVERTISE_INTERVAL_MS = 30_000;
 
@@ -251,6 +254,7 @@ async function main(): Promise<void> {
   const node: FhsNode = await createStarNode({
     identity,
     listenAddrs: FHS_LISTEN_ADDRS,
+    announceAddrs: FHS_ANNOUNCE_ADDRS,
     bootstrapAddrs: FHS_BOOTSTRAP_ADDRS,
   });
 
