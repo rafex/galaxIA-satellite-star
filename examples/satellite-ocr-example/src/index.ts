@@ -41,8 +41,6 @@ const FHS_BOOTSTRAP_ADDRS = process.env.FHS_BOOTSTRAP_ADDRS
 const FHS_LISTEN_ADDRS = process.env.FHS_LISTEN_ADDRS
   ? process.env.FHS_LISTEN_ADDRS.split(",").map((a) => a.trim())
   : ["/ip4/0.0.0.0/tcp/4003/ws"];
-const OCR_SERVICE_URL = process.env.OCR_SERVICE_URL ?? "http://localhost:8000";
-const OCR_API_KEY = process.env.OCR_API_KEY ?? "";
 const PROVIDER_NAME = process.env.PROVIDER_NAME ?? "Satellite OCR FHS";
 const ADVERTISE_INTERVAL_MS = 30_000;
 
@@ -289,7 +287,7 @@ async function main(): Promise<void> {
   });
   console.log("[dht] beacon publicado");
 
-  const bridge = new OcrBridge(OCR_SERVICE_URL, OCR_API_KEY);
+  const bridge = new OcrBridge();
 
   // Anuncio GossipSub cada 30s
   const advertise = (): void => {

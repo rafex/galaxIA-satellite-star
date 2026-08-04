@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Contenedor del OCR Provider FHS
-# Recubre un servicio OCR HTTP externo con el protocolo FHS WebSocket.
-# Expone tools FHS en puerto 43112.
+# Ejecuta Tesseract dentro del contenedor y expone la tool por FHS/libp2p.
+# Expone el nodo P2P en puerto 4003.
 #
 # @rafex/galaxia-fhs-protocol se instala desde GitHub Packages (requiere
 # autenticación incluso para paquetes públicos). El token se pasa como
@@ -11,7 +11,7 @@
 # o con podman (>=4):
 #   podman build --secret id=gh_token,env=GH_TOKEN -f containers/satellite-ocr/Containerfile .
 
-FROM docker.io/library/node:22-alpine AS builder
+FROM docker.io/library/node:22-bookworm-slim AS builder
 WORKDIR /app
 
 COPY package*.json .npmrc ./
@@ -23,11 +23,13 @@ COPY examples/satellite-ocr-example ./examples/satellite-ocr-example
 
 RUN npm run build -w examples/satellite-ocr-example
 
-FROM docker.io/library/node:22-alpine
+FROM docker.io/library/node:22-bookworm-slim
 WORKDIR /app
 ENV NODE_ENV=production
 
-RUN apk add --no-cache curl
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa \
+  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/node_modules ./node_modules
@@ -39,8 +41,6 @@ EXPOSE 4003
 
 ENV FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4003/ws
 ENV FHS_BOOTSTRAP_ADDRS=
-ENV OCR_SERVICE_URL=http://host.containers.internal:8000
-ENV OCR_API_KEY=dev-key-ether-ocr
 ENV PROVIDER_NAME="Satellite OCR FHS"
 
 CMD ["node", "dist/index.js"]

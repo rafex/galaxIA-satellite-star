@@ -58,14 +58,10 @@ services:
     environment:
       - FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4003/ws
       - FHS_BOOTSTRAP_ADDRS=${FHS_BOOTSTRAP_ADDRS:-}
-      - OCR_SERVICE_URL=${OCR_SERVICE_URL:-http://host.containers.internal:8000}
-      - OCR_API_KEY=${OCR_API_KEY:-dev-key-ether-ocr}
       - PROVIDER_NAME=${PROVIDER_NAME:-Satellite OCR FHS}
       - IDENTITY_KEY_PATH=/data/.fhs-identity-ocr.json
     volumes:
       - ocr-data:/data
-    extra_hosts:
-      - "host.containers.internal:host-gateway"
     restart: unless-stopped
 
   rag-provider:
