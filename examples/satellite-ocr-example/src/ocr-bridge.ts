@@ -3,9 +3,10 @@ import { writeFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import type { ArtifactRef } from "@rafex/galaxia-fhs-protocol";
 
 export interface OcrInput {
-  fileBase64: string;
+  file: ArtifactRef;
   filename?: string;
   lang?: string;
 }
@@ -28,7 +29,7 @@ export class OcrBridge {
     const tmpPath = join(tmpdir(), filename);
 
     try {
-      const buffer = Buffer.from(input.fileBase64, "base64");
+      const buffer = await this.resolveArtifact(input.file, signal);
       await writeFile(tmpPath, buffer);
 
       const url = `${this.serviceUrl}/api/v1/ocr`;
@@ -45,6 +46,19 @@ export class OcrBridge {
     } finally {
       await unlink(tmpPath).catch(() => {});
     }
+  }
+
+  private async resolveArtifact(file: ArtifactRef, signal?: AbortSignal): Promise<Buffer> {
+    if (file.transport === "inline") {
+      return Buffer.from(file.base64, "base64");
+    }
+
+    const gateway = file.gatewayUrl || "https://ipfs.io/ipfs";
+    const response = await fetch(`${gateway.replace(/\/$/, "")}/${encodeURIComponent(file.cid)}`, { signal });
+    if (!response.ok) {
+      throw new Error(`IPFS gateway respondió ${response.status} para ${file.cid}`);
+    }
+    return Buffer.from(await response.arrayBuffer());
   }
 
   private curlMultipart(

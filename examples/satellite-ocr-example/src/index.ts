@@ -22,6 +22,7 @@ import {
 import { fromString } from "uint8arrays";
 import { configureSigner, decodeTopic, dynamicValueToJson, encodeDht, encodeTopic } from "@galaxia/fhs-wire";
 import { FhsProto } from "@rafex/galaxia-fhs-protocol";
+import type { ArtifactRef } from "@rafex/galaxia-fhs-protocol";
 import {
   loadOrCreateFhsIdentity,
   createStarNode,
@@ -51,13 +52,22 @@ const OCR_TOOLS = [
   {
     name: "extract_text",
     description:
-      "Extrae texto de una imagen usando OCR (Tesseract). Recibe la imagen en base64.",
+      "Extrae texto de una imagen usando OCR (Tesseract). Recibe un ArtifactRef inline o IPFS.",
     inputSchema: JSON.stringify({
       type: "object",
       properties: {
-        fileBase64: {
-          type: "string",
-          description: "Imagen codificada en base64 (PNG, JPEG, TIFF, etc.).",
+        file: {
+          type: "object",
+          description: "ArtifactRef inline o IPFS con la imagen PNG, JPEG, TIFF, etc.",
+          properties: {
+            transport: { type: "string", enum: ["inline", "ipfs"] },
+            base64: { type: "string" },
+            cid: { type: "string" },
+            network: { type: "string", enum: ["public", "private"] },
+            gatewayUrl: { type: "string" },
+            filename: { type: "string" },
+            retention: { type: "string", enum: ["ephemeral", "reuse"] },
+          },
         },
         filename: {
           type: "string",
@@ -68,7 +78,7 @@ const OCR_TOOLS = [
           description: "Idioma(s) Tesseract separados por '+', ej. 'spa+eng'. Default: 'spa+eng'.",
         },
       },
-      required: ["fileBase64"],
+      required: ["file"],
     }),
   },
 ];
@@ -187,14 +197,18 @@ async function handleToolStream(
           }
 
           const args = (dynamicValueToJson(call.function?.arguments) ?? {}) as {
-            fileBase64: string;
+            file: ArtifactRef;
             filename?: string;
             lang?: string;
           };
 
+          if (!args.file || typeof args.file !== "object" || !("transport" in args.file)) {
+            throw new Error("La tool extract_text requiere file: ArtifactRef");
+          }
+
           const abortCtrl = new AbortController();
           const result = await bridge.extract(
-            { fileBase64: args.fileBase64, filename: args.filename, lang: args.lang },
+            { file: args.file, filename: args.filename, lang: args.lang },
             abortCtrl.signal
           );
 
