@@ -22,7 +22,7 @@
     "@libp2p/peer-id": "6.0.14",
     "@libp2p/websockets": "10.1.19",
     "@galaxia/fhs-wire": "file:../fhs-wire",
-    "@rafex/galaxia-fhs-protocol": "npm:@rafex_labs/galaxia-fhs-protocol@^0.1.28",
+    "@rafex/galaxia-fhs-protocol": "npm:@rafex_labs/galaxia-fhs-protocol@^0.1.29",
     "it-length-prefixed": "11.0.1",
     "libp2p": "3.3.8",
     "multiformats": "^13.3.1",

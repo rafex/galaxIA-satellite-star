@@ -16,6 +16,7 @@ import {
   missionOfferSignaturePayload,
   nodeAdvertiseSignaturePayload,
   verifySignature,
+  type ArtifactRef as LocalArtifactRef,
 } from "@rafex/galaxia-fhs-protocol";
 
 type AnyRecord = Record<string, unknown>;
@@ -120,6 +121,11 @@ export function dynamicValueFromLocal(value: unknown): FhsProto.DynamicValue {
       : create(FhsProto.DynamicValueSchema, { kind: { case: "numberValue", value } });
   }
   if (typeof value === "string") return create(FhsProto.DynamicValueSchema, { kind: { case: "stringValue", value } });
+  if (isArtifactRef(value)) {
+    return create(FhsProto.DynamicValueSchema, {
+      kind: { case: "artifactRef", value: artifactRefToProto(value) },
+    });
+  }
   if (Array.isArray(value)) return create(FhsProto.DynamicValueSchema, {
     kind: { case: "listValue", value: create(FhsProto.DynamicListSchema, { values: value.map(dynamicValueFromLocal) }) },
   });
@@ -140,10 +146,65 @@ export function dynamicValueToJson(value: FhsProto.DynamicValue | undefined): un
     case "numberValue":
     case "stringValue":
     case "bytesValue": return value.kind.value;
+    case "artifactRef": return artifactRefFromProto(value.kind.value);
     case "integerValue": return Number(value.kind.value);
     case "listValue": return value.kind.value.values.map(dynamicValueToJson);
     case "objectValue": return Object.fromEntries(Object.entries(value.kind.value.fields).map(([key, item]) => [key, dynamicValueToJson(item)]));
   }
+}
+
+function isArtifactRef(value: unknown): value is LocalArtifactRef {
+  if (!value || typeof value !== "object") return false;
+  const transport = (value as { transport?: unknown }).transport;
+  return transport === "inline" || transport === "ipfs";
+}
+
+function artifactRefToProto(value: LocalArtifactRef): FhsProto.ArtifactRef {
+  if (value.transport === "inline") {
+    return create(FhsProto.ArtifactRefSchema, {
+      transport: {
+        case: "inline",
+        value: create(FhsProto.InlineArtifactSchema, {
+          data: Uint8Array.from(Buffer.from(value.base64, "base64")),
+          filename: value.filename ?? "",
+        }),
+      },
+    });
+  }
+
+  return create(FhsProto.ArtifactRefSchema, {
+    transport: {
+      case: "ipfs",
+      value: create(FhsProto.IpfsArtifactSchema, {
+        cid: value.cid,
+        network: value.network,
+        gatewayUrl: value.gatewayUrl ?? "",
+        filename: value.filename ?? "",
+        retention: value.retention ?? "ephemeral",
+      }),
+    },
+  });
+}
+
+function artifactRefFromProto(value: FhsProto.ArtifactRef): LocalArtifactRef {
+  if (value.transport.case === "inline") {
+    return {
+      transport: "inline",
+      base64: Buffer.from(value.transport.value.data).toString("base64"),
+      filename: value.transport.value.filename || undefined,
+    };
+  }
+  if (value.transport.case === "ipfs") {
+    return {
+      transport: "ipfs",
+      cid: value.transport.value.cid,
+      network: value.transport.value.network as "public" | "private",
+      gatewayUrl: value.transport.value.gatewayUrl || undefined,
+      filename: value.transport.value.filename || undefined,
+      retention: value.transport.value.retention === "reuse" ? "reuse" : "ephemeral",
+    };
+  }
+  throw new Error("ArtifactRef Protobuf sin transporte");
 }
 
 function schemaFromLocal(value: unknown): FhsProto.ToolInputSchema | undefined {
