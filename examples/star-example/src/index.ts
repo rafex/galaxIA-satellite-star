@@ -43,6 +43,9 @@ const FHS_BOOTSTRAP_ADDRS = process.env.FHS_BOOTSTRAP_ADDRS
 const FHS_LISTEN_ADDRS = process.env.FHS_LISTEN_ADDRS
   ? process.env.FHS_LISTEN_ADDRS.split(",").map((a) => a.trim())
   : ["/ip4/0.0.0.0/tcp/4002/ws"];
+const FHS_ANNOUNCE_ADDRS = process.env.FHS_ANNOUNCE_ADDRS
+  ? process.env.FHS_ANNOUNCE_ADDRS.split(",").map((a) => a.trim())
+  : undefined;
 const LLAMA_CPP_URL = process.env.LLAMA_CPP_URL ?? "http://localhost:43110/v1";
 const PROVIDER_NAME = process.env.PROVIDER_NAME ?? "Star FHS";
 const MODEL_ID = process.env.MODEL_ID ?? "default";
@@ -198,6 +201,7 @@ async function main(): Promise<void> {
   const node: FhsNode = await createStarNode({
     identity,
     listenAddrs: FHS_LISTEN_ADDRS,
+    announceAddrs: FHS_ANNOUNCE_ADDRS,
     bootstrapAddrs: FHS_BOOTSTRAP_ADDRS,
   });
 
