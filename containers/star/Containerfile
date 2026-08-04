@@ -1,14 +1,10 @@
 # syntax=docker/dockerfile:1
-# Contenedor del LLM Provider FHS
-# Recubre llama.cpp con el protocolo FHS WebSocket.
-# Expone chat FHS en puerto 43111.
+# Contenedor del Star (LLM Provider) FHS P2P — DEC-0088
+# Ciclo P2P completo: bootstrap → DHT beacon → FloodSub → offer/bid/assign → stream.
+# Puerto 4002: WebSocket libp2p (misiones chat directas).
 #
-# @rafex/galaxia-fhs-protocol se instala desde GitHub Packages (requiere
-# autenticación incluso para paquetes públicos). El token se pasa como
-# secret de BuildKit (nunca queda en una capa de la imagen ni en el
-# historial): construir con
-#   DOCKER_BUILDKIT=1 docker build --secret id=gh_token,env=GH_TOKEN -f containers/star/Containerfile .
-# o con podman (>=4):
+# @rafex/galaxia-fhs-protocol se instala desde GitHub Packages.
+# Pasar el token como secret de BuildKit:
 #   podman build --secret id=gh_token,env=GH_TOKEN -f containers/star/Containerfile .
 
 FROM docker.io/library/node:20-alpine AS builder
@@ -36,13 +32,11 @@ COPY --from=builder /app/examples/star-example/package.json ./examples/star-exam
 COPY --from=builder /app/examples/star-example/dist ./examples/star-example/dist
 
 WORKDIR /app/examples/star-example
-EXPOSE 43111
+EXPOSE 4002
 
-ENV LLM_PROVIDER_PORT=43111
-ENV LLM_PROVIDER_HOST=star
-ENV REGISTRY_URL=ws://atlas:8081/fhs/v1/ws
+ENV FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4002/ws
+ENV FHS_BOOTSTRAP_ADDRS=
 ENV LLAMA_CPP_URL=http://host.containers.internal:43110/v1
-ENV PROVIDER_ID=did:key:macmini-raul
-ENV PROVIDER_NAME="Mac mini de Raul"
+ENV PROVIDER_NAME="Star FHS"
 
 CMD ["node", "dist/index.js"]

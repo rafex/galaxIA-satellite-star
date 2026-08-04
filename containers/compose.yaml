@@ -31,18 +31,17 @@ services:
         - gh_token
     container_name: fhs-star
     ports:
-      - "43111:43111"
+      - "4002:4002"
     environment:
-      - LLM_PROVIDER_PORT=43111
-      - LLM_PROVIDER_HOST=${LLM_PROVIDER_HOST:-star}
-      - REGISTRY_URL=${PROVIDER_REGISTRY_URL:-ws://host.containers.internal:30083/fhs/v1/ws}
+      - FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4002/ws
+      # Multiaddr del Atlas bootstrap — levantar Atlas primero y anotar su PeerID
+      # Ejemplo: /ip4/192.168.1.139/tcp/4001/ws/p2p/<PeerID>
+      - FHS_BOOTSTRAP_ADDRS=${FHS_BOOTSTRAP_ADDRS:-}
       - LLAMA_CPP_URL=${LLAMA_CPP_URL:-http://host.containers.internal:43110/v1}
-      - PROVIDER_ID=did:key:macmini-raul
-      - PROVIDER_NAME=Mac mini de Raul
-      - MODEL_ID=qwen2.5-coder-3b-instruct
-      - MODEL_DISPLAY_NAME=Qwen 2.5 Coder 3B Instruct
-      - MODEL_CONTEXT_WINDOW=4096
-      - MODEL_TOOL_CALLING_SUPPORTED=true
+      - PROVIDER_NAME=${PROVIDER_NAME:-Star FHS Bastion}
+      - IDENTITY_KEY_PATH=/data/.fhs-identity-star.json
+    volumes:
+      - star-data:/data
     extra_hosts:
       - "host.containers.internal:host-gateway"
     restart: unless-stopped
@@ -55,15 +54,16 @@ services:
         - gh_token
     container_name: fhs-satellite-ocr
     ports:
-      - "43112:43112"
+      - "4003:4003"
     environment:
-      - OCR_PROVIDER_PORT=43112
-      - OCR_PROVIDER_HOST=${OCR_PROVIDER_HOST:-satellite-ocr}
-      - REGISTRY_URL=${PROVIDER_REGISTRY_URL:-ws://host.containers.internal:30083/fhs/v1/ws}
-      - OCR_SERVICE_URL=${OCR_SERVICE_URL:-http://ether-ocr-api:8000}
+      - FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4003/ws
+      - FHS_BOOTSTRAP_ADDRS=${FHS_BOOTSTRAP_ADDRS:-}
+      - OCR_SERVICE_URL=${OCR_SERVICE_URL:-http://host.containers.internal:8000}
       - OCR_API_KEY=${OCR_API_KEY:-dev-key-ether-ocr}
-      - PROVIDER_ID=did:key:ocr-provider-01
-      - PROVIDER_NAME=OCR FHS Provider
+      - PROVIDER_NAME=${PROVIDER_NAME:-Satellite OCR FHS}
+      - IDENTITY_KEY_PATH=/data/.fhs-identity-ocr.json
+    volumes:
+      - ocr-data:/data
     extra_hosts:
       - "host.containers.internal:host-gateway"
     restart: unless-stopped
@@ -76,13 +76,14 @@ services:
         - gh_token
     container_name: fhs-rag-provider
     ports:
-      - "43113:43113"
+      - "4005:4005"
     environment:
-      - RAG_PROVIDER_PORT=43113
-      - RAG_PROVIDER_HOST=${RAG_PROVIDER_HOST:-rag-provider}
-      - REGISTRY_URL=${PROVIDER_REGISTRY_URL:-ws://host.containers.internal:30083/fhs/v1/ws}
-      - PROVIDER_ID=did:key:rag-provider-01
-      - PROVIDER_NAME=RAG FHS Provider
+      - FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4005/ws
+      - FHS_BOOTSTRAP_ADDRS=${FHS_BOOTSTRAP_ADDRS:-}
+      - PROVIDER_NAME=${PROVIDER_NAME:-RAG Provider FHS}
+      - IDENTITY_KEY_PATH=/data/.fhs-identity-rag.json
+    volumes:
+      - rag-data:/data
     extra_hosts:
       - "host.containers.internal:host-gateway"
     restart: unless-stopped
@@ -95,13 +96,15 @@ services:
         - gh_token
     container_name: fhs-kb-provider
     ports:
-      - "43114:43114"
+      - "4006:4006"
     environment:
-      - KB_PROVIDER_PORT=43114
-      - KB_PROVIDER_HOST=${KB_PROVIDER_HOST:-kb-provider}
-      - REGISTRY_URL=${PROVIDER_REGISTRY_URL:-ws://host.containers.internal:30083/fhs/v1/ws}
-      - PROVIDER_ID=did:key:kb-provider-01
-      - PROVIDER_NAME=KB FHS Provider
+      - FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4006/ws
+      - FHS_BOOTSTRAP_ADDRS=${FHS_BOOTSTRAP_ADDRS:-}
+      - PROVIDER_NAME=${PROVIDER_NAME:-KB Provider FHS}
+      - IDENTITY_KEY_PATH=/data/.fhs-identity-kb.json
+      - KB_CONTENT_DIR=/data/content
+    volumes:
+      - kb-data:/data
     extra_hosts:
       - "host.containers.internal:host-gateway"
     restart: unless-stopped
@@ -109,3 +112,9 @@ services:
 secrets:
   gh_token:
     environment: GH_TOKEN
+
+volumes:
+  star-data:
+  ocr-data:
+  rag-data:
+  kb-data:

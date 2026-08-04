@@ -36,14 +36,12 @@ COPY --from=builder /app/examples/satellite-ocr-example/package.json ./examples/
 COPY --from=builder /app/examples/satellite-ocr-example/dist ./examples/satellite-ocr-example/dist
 
 WORKDIR /app/examples/satellite-ocr-example
-EXPOSE 43112
+EXPOSE 4003
 
-ENV OCR_PROVIDER_PORT=43112
-ENV OCR_PROVIDER_HOST=satellite-ocr
-ENV REGISTRY_URL=ws://atlas:8081/fhs/v1/ws
-ENV OCR_SERVICE_URL=http://ether-ocr-api:8000
+ENV FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4003/ws
+ENV FHS_BOOTSTRAP_ADDRS=
+ENV OCR_SERVICE_URL=http://host.containers.internal:8000
 ENV OCR_API_KEY=dev-key-ether-ocr
-ENV PROVIDER_ID=did:key:ocr-provider-01
-ENV PROVIDER_NAME="OCR FHS Provider"
+ENV PROVIDER_NAME="Satellite OCR FHS"
 
 CMD ["node", "dist/index.js"]
