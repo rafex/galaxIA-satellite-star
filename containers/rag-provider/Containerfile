@@ -18,12 +18,14 @@ FROM docker.io/library/node:22-alpine AS builder
 WORKDIR /app
 
 COPY package*.json .npmrc ./
+COPY examples/fhs-wire/package.json ./examples/fhs-wire/
 COPY examples/rag-provider/package.json ./examples/rag-provider/
 
 RUN --mount=type=secret,id=gh_token \
     export GH_TOKEN="$(cat /run/secrets/gh_token)" && npm ci
 
 COPY examples/rag-provider ./examples/rag-provider
+COPY examples/fhs-wire ./examples/fhs-wire
 
 RUN npm run build -w examples/rag-provider
 
