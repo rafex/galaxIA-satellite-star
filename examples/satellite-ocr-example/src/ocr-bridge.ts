@@ -18,7 +18,11 @@ export interface OcrOutput {
 export class OcrBridge {
   async extract(input: OcrInput, signal?: AbortSignal): Promise<OcrOutput> {
     const workDir = await mkdtemp(join(tmpdir(), "fhs-ocr-"));
-    const filename = sanitizeFilename(input.filename || `ocr-${randomUUID()}.png`);
+    // Navigator conserva el nombre en el ArtifactRef; `args.filename` es
+    // opcional y normalmente no se envía en la llamada de la tool. Derivarlo
+    // aquí es necesario para seleccionar la ruta PDF en vez de Tesseract como
+    // si el archivo fuese una imagen PNG.
+    const filename = sanitizeFilename(input.filename || artifactFilename(input.file) || `ocr-${randomUUID()}.png`);
     const tmpPath = join(workDir, filename);
 
     try {
@@ -114,6 +118,12 @@ function sanitizeFilename(filename: string): string {
 
 function isPdf(filename: string): boolean {
   return filename.toLowerCase().endsWith(".pdf");
+}
+
+function artifactFilename(file: ArtifactRef): string | undefined {
+  if (file.transport === "inline") return file.filename;
+  if (file.transport === "ipfs") return file.filename;
+  return undefined;
 }
 
 function pageNumber(filename: string): number {
