@@ -25,7 +25,10 @@ COPY examples/fhs-wire ./examples/fhs-wire
 
 RUN npm run build -w examples/fhs-wire && npm run build -w examples/satellite-ocr-example
 
-FROM docker.io/library/node:22-bookworm-slim
+# The full Bookworm image includes Debian's CA store.  The slim image does
+# not, which makes the HTTPS Debian mirrors unusable before ca-certificates
+# can be installed and leaves the OCR toolchain absent from the image.
+FROM docker.io/library/node:22-bookworm
 WORKDIR /app
 ENV NODE_ENV=production
 
