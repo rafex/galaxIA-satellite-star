@@ -29,7 +29,9 @@ FROM docker.io/library/node:22-bookworm-slim
 WORKDIR /app
 ENV NODE_ENV=production
 
-RUN apt-get update \
+# HTTPS avoids stalled HTTP mirror connections on isolated ARM hosts.
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+  && apt-get update \
   && apt-get install -y --no-install-recommends poppler-utils tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa \
   && rm -rf /var/lib/apt/lists/*
 
