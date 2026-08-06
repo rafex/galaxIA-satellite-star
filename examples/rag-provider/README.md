@@ -1,6 +1,6 @@
 # rag-provider — RAG Provider FHS (SPEC-RAG-0001)
 
-Nodo `type: "mcp"` que expone `document_index`/`document_query` — indexado y recuperación de documentos **por conversación**, privado por defecto, con retención acotada (`privacy.retention: { ttl: "PT4H" }`).
+Nodo `type: "mcp"` que expone `document_index`/`document_query` — indexado y recuperación de documentos **por conversación y documentId**, privado por defecto, con retención acotada (`privacy.retention: { ttl: "PT4H" }`). El Portal lo selecciona explícitamente como fuente `RAG_SOURCE_NETWORK`; el MVP no fusiona este índice con el RAG local del navegador.
 
 ## Stack / motor interno (referencia, NO recomendación)
 

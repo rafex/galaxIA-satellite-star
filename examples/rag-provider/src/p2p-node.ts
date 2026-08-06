@@ -61,6 +61,7 @@ export interface StarNodeConfig {
   identity: FhsIdentity;
   listenAddrs?: string[];
   bootstrapAddrs?: string[];
+  announceAddrs?: string[];
   tlsCertPath?: string;
   tlsKeyPath?: string;
 }
@@ -70,6 +71,9 @@ export async function createStarNode(config: StarNodeConfig): Promise<FhsNode> {
     identity,
     listenAddrs = ["/ip4/0.0.0.0/tcp/0/tls/ws"],
     bootstrapAddrs = [],
+    announceAddrs = process.env.FHS_ANNOUNCE_ADDRS
+      ? process.env.FHS_ANNOUNCE_ADDRS.split(",").map((address) => address.trim()).filter(Boolean)
+      : [],
     tlsCertPath = process.env.TLS_CERT_PATH,
     tlsKeyPath = process.env.TLS_KEY_PATH,
   } = config;
@@ -83,7 +87,7 @@ export async function createStarNode(config: StarNodeConfig): Promise<FhsNode> {
   const node: FhsNode = await createLibp2p({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     privateKey: identity.privateKey as any,
-    addresses: { listen: listenAddrs },
+    addresses: { listen: listenAddrs, ...(announceAddrs.length > 0 ? { announce: announceAddrs } : {}) },
     transports: [
       tlsCertPath && tlsKeyPath
         ? webSockets({ https: { cert: readFileSync(tlsCertPath), key: readFileSync(tlsKeyPath) } })

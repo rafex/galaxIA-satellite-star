@@ -55,6 +55,7 @@ const RAG_TOOLS = [
       type: "object",
       properties: {
         conversationId: { type: "string", description: "ID de la conversación." },
+        documentId: { type: "string", description: "ID estable del documento dentro de la conversación." },
         text: { type: "string", description: "Texto a indexar." },
         source: { type: "string", description: "Procedencia del fragmento. Default: 'user-upload'." },
       },
@@ -69,6 +70,7 @@ const RAG_TOOLS = [
       type: "object",
       properties: {
         conversationId: { type: "string", description: "ID de la conversación." },
+        documentId: { type: "string", description: "ID estable del documento dentro de la conversación." },
         query: { type: "string", description: "Consulta en lenguaje natural." },
         topK: { type: "number", description: "Número máximo de fragmentos. Default: 3." },
       },
@@ -183,13 +185,14 @@ async function handleToolStream(
           if (functionName === "document_index") {
             const conversationId = String(args.conversationId ?? "");
             const text = String(args.text ?? "");
+            const documentId = String(args.documentId ?? "");
             const source = String(args.source ?? "user-upload");
-            const indexed = bridge.index(conversationId, text, 512, 64, source);
+            const indexed = bridge.index(conversationId, text, 512, 64, source, documentId);
 
             const successMsg = create(FhsProto.ToolCallResultMessageSchema, {
               missionId: req.missionId,
               toolCallId: call.id,
-              result: dynamicValueFromLocal({ indexed, conversationId }),
+              result: dynamicValueFromLocal({ indexed, conversationId, documentId }),
             });
             sendEnvelope(stream, "tool_result", successMsg);
             console.log(`[mission] ${req.missionId}/${call.id} — indexados ${indexed} chunks`);
@@ -199,8 +202,9 @@ async function handleToolStream(
           if (functionName === "document_query") {
             const conversationId = String(args.conversationId ?? "");
             const query = String(args.query ?? "");
-            const topK = typeof args.topK === "number" ? args.topK : 3;
-            const chunks = bridge.query(conversationId, query, topK);
+            const documentId = String(args.documentId ?? "");
+            const topK = typeof args.topK === "number" ? args.topK : (typeof args.top_k === "number" ? args.top_k : 3);
+            const chunks = bridge.query(conversationId, query, topK, documentId);
 
             const successMsg = create(FhsProto.ToolCallResultMessageSchema, {
               missionId: req.missionId,
@@ -267,7 +271,7 @@ async function main(): Promise<void> {
     did: identity.did,
     type: FhsProto.ProviderType.SATELLITE,
     name: PROVIDER_NAME,
-    capabilities: ["document.retrieve"],
+    capabilities: ["document.index", "document.query"],
     tags: RAG_TOOLS.map((tool) => `tool:${tool.name}`),
   });
 
@@ -304,14 +308,14 @@ async function main(): Promise<void> {
     const offer = raw as FhsProto.MissionOfferMessage;
     if (!offer.missionId) return;
     if (offer.missionType !== "tool_call") return;
-    if (!offer.requiredCapabilities?.includes("document.retrieve")) return;
+    if (!offer.requiredCapabilities?.some((capability) => capability === "document.index" || capability === "document.query")) return;
 
     const bid = create(FhsProto.MissionBidMessageSchema, {
       missionId: offer.missionId,
       providerDid: identity.did,
       providerMultiaddrs: multiaddrs(),
       providerType: "satellite",
-      offeredCapabilities: ["document.retrieve"],
+      offeredCapabilities: ["document.index", "document.query"],
       reputationScore: 0.5,
       estimatedLatencyMs: 100,
       trustLevel: "community",
