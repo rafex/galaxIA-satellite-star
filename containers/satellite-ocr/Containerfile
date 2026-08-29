@@ -11,7 +11,7 @@
 # o con podman (>=4):
 #   podman build --secret id=gh_token,env=GH_TOKEN -f containers/satellite-ocr/Containerfile .
 
-FROM docker.io/library/node:22-bookworm-slim AS builder
+FROM docker.io/library/node:24-bookworm-slim AS builder
 WORKDIR /app
 
 COPY package*.json .npmrc ./
@@ -28,7 +28,7 @@ RUN npm run build -w examples/fhs-wire && npm run build -w examples/satellite-oc
 # The full Bookworm image includes Debian's CA store.  The slim image does
 # not, which makes the HTTPS Debian mirrors unusable before ca-certificates
 # can be installed and leaves the OCR toolchain absent from the image.
-FROM docker.io/library/node:22-bookworm
+FROM docker.io/library/node:24-bookworm
 WORKDIR /app
 ENV NODE_ENV=production
 

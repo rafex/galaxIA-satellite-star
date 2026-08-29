@@ -1,0 +1,106 @@
+# galaxIA-satellite-star — Docker Compose de release
+# Usa las imágenes publicadas en GHCR en vez de construirlas localmente.
+# Pensado para correr sin clonar el repo — solo hace falta este archivo.
+#
+# Diferencia con compose.yaml (desarrollo): ese usa `build:` contra código
+# fuente local; este usa `image:` contra versiones ya publicadas.
+#
+# Uso:
+#   REF=main  # o: v0.2.0 para una release reproducible
+#   curl -O https://raw.githubusercontent.com/rafex/galaxIA-satellite-star/${REF}/containers/compose.release.yaml
+#   # Configurar variables mínimas:
+#   export FHS_BOOTSTRAP_ADDRS=/ip4/<IP_BASTION>/tcp/4001/tls/ws
+#   export CERTS_DIR=/ruta/a/certs
+#   podman-compose -f compose.release.yaml up -d
+#
+# Para correr solo un provider específico:
+#   podman-compose -f compose.release.yaml up -d star
+
+services:
+  star:
+    image: ghcr.io/rafex/galaxia-star:${GALAXIA_VERSION:-latest}
+    container_name: fhs-star
+    ports:
+      - "4002:4002"
+    environment:
+      - FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4002/tls/ws
+      - TLS_CERT_PATH=${TLS_CERT_PATH:-/certs/e2e.crt}
+      - TLS_KEY_PATH=${TLS_KEY_PATH:-/certs/e2e.key}
+      - NODE_EXTRA_CA_CERTS=${NODE_EXTRA_CA_CERTS:-/certs/e2e.crt}
+      - FHS_BOOTSTRAP_ADDRS=${FHS_BOOTSTRAP_ADDRS:-}
+      - FHS_ANNOUNCE_ADDRS=${FHS_ANNOUNCE_ADDRS:-}
+      - LLAMA_CPP_URL=${LLAMA_CPP_URL:-http://host.containers.internal:43110/v1}
+      - PROVIDER_NAME=${PROVIDER_NAME:-Star FHS}
+      - IDENTITY_KEY_PATH=/data/.fhs-identity-star.json
+    volumes:
+      - star-data:/data
+      - ${CERTS_DIR:-../certs}:/certs:ro
+    extra_hosts:
+      - "host.containers.internal:host-gateway"
+    restart: unless-stopped
+
+  satellite-ocr:
+    image: ghcr.io/rafex/galaxia-satellite-ocr:${GALAXIA_VERSION:-latest}
+    container_name: fhs-satellite-ocr
+    ports:
+      - "4003:4003"
+    environment:
+      - FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4003/tls/ws
+      - TLS_CERT_PATH=${TLS_CERT_PATH:-/certs/e2e.crt}
+      - TLS_KEY_PATH=${TLS_KEY_PATH:-/certs/e2e.key}
+      - NODE_EXTRA_CA_CERTS=${NODE_EXTRA_CA_CERTS:-/certs/e2e.crt}
+      - FHS_BOOTSTRAP_ADDRS=${FHS_BOOTSTRAP_ADDRS:-}
+      - FHS_ANNOUNCE_ADDRS=${FHS_ANNOUNCE_ADDRS:-}
+      - PROVIDER_NAME=${PROVIDER_NAME:-Satellite OCR FHS}
+      - IDENTITY_KEY_PATH=/data/.fhs-identity-ocr.json
+    volumes:
+      - ocr-data:/data
+      - ${CERTS_DIR:-../certs}:/certs:ro
+    restart: unless-stopped
+
+  rag-provider:
+    image: ghcr.io/rafex/galaxia-rag-provider:${GALAXIA_VERSION:-latest}
+    container_name: fhs-rag-provider
+    ports:
+      - "4005:4005"
+    environment:
+      - FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4005/tls/ws
+      - TLS_CERT_PATH=${TLS_CERT_PATH:-/certs/e2e.crt}
+      - TLS_KEY_PATH=${TLS_KEY_PATH:-/certs/e2e.key}
+      - NODE_EXTRA_CA_CERTS=${NODE_EXTRA_CA_CERTS:-/certs/e2e.crt}
+      - FHS_BOOTSTRAP_ADDRS=${FHS_BOOTSTRAP_ADDRS:-}
+      - PROVIDER_NAME=${PROVIDER_NAME:-RAG Provider FHS}
+      - IDENTITY_KEY_PATH=/data/.fhs-identity-rag.json
+    volumes:
+      - rag-data:/data
+      - ${CERTS_DIR:-../certs}:/certs:ro
+    extra_hosts:
+      - "host.containers.internal:host-gateway"
+    restart: unless-stopped
+
+  kb-provider:
+    image: ghcr.io/rafex/galaxia-kb-provider:${GALAXIA_VERSION:-latest}
+    container_name: fhs-kb-provider
+    ports:
+      - "4006:4006"
+    environment:
+      - FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4006/tls/ws
+      - TLS_CERT_PATH=${TLS_CERT_PATH:-/certs/e2e.crt}
+      - TLS_KEY_PATH=${TLS_KEY_PATH:-/certs/e2e.key}
+      - NODE_EXTRA_CA_CERTS=${NODE_EXTRA_CA_CERTS:-/certs/e2e.crt}
+      - FHS_BOOTSTRAP_ADDRS=${FHS_BOOTSTRAP_ADDRS:-}
+      - PROVIDER_NAME=${PROVIDER_NAME:-KB Provider FHS}
+      - IDENTITY_KEY_PATH=/data/.fhs-identity-kb.json
+      - KB_CONTENT_DIR=/data/content
+    volumes:
+      - kb-data:/data
+      - ${CERTS_DIR:-../certs}:/certs:ro
+    extra_hosts:
+      - "host.containers.internal:host-gateway"
+    restart: unless-stopped
+
+volumes:
+  star-data:
+  ocr-data:
+  rag-data:
+  kb-data:
