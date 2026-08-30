@@ -16,7 +16,8 @@ import {
   privateKeyToProtobuf,
   privateKeyFromProtobuf,
 } from "@libp2p/crypto/keys";
-import { peerIdFromPrivateKey } from "@libp2p/peer-id";
+import { KEEP_ALIVE } from "@libp2p/interface";
+import { peerIdFromPrivateKey, peerIdFromString } from "@libp2p/peer-id";
 import { multiaddr } from "@multiformats/multiaddr";
 import { base58btc } from "multiformats/bases/base58";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -113,8 +114,27 @@ export async function createStarNode(config: StarNodeConfig): Promise<FhsNode> {
   await node.start();
 
   for (const addr of bootstrapAddrs) {
+    const ma = multiaddr(addr);
+    const bootstrapPeerId = ma.toString().match(/\/p2p\/([^/]+)$/)?.[1];
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    node.dial(multiaddr(addr) as any).catch(() => {});
+    node.dial(ma as any)
+      .then(() => {
+        // Sin esto, ConnectionManager puede podar la conexión al bootstrap
+        // por inactividad y el nodo queda aislado del swarm para siempre —
+        // el dial de arranque es de un solo intento y nada más lo
+        // reintenta. El tag "keep-alive-*" es el mecanismo nativo de
+        // libp2p tanto para proteger la conexión de la poda como para
+        // redial automático si igual se desconecta.
+        if (bootstrapPeerId) {
+          node.peerStore
+            .merge(peerIdFromString(bootstrapPeerId), {
+              tags: { [`${KEEP_ALIVE}-bootstrap`]: { value: 100 } },
+            })
+            .catch(() => {});
+        }
+      })
+      .catch(() => {});
   }
 
   return node;

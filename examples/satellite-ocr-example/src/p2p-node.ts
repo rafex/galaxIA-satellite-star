@@ -16,7 +16,8 @@ import {
   privateKeyToProtobuf,
   privateKeyFromProtobuf,
 } from "@libp2p/crypto/keys";
-import { peerIdFromPrivateKey } from "@libp2p/peer-id";
+import { KEEP_ALIVE } from "@libp2p/interface";
+import { peerIdFromPrivateKey, peerIdFromString } from "@libp2p/peer-id";
 import { multiaddr } from "@multiformats/multiaddr";
 import { base58btc } from "multiformats/bases/base58";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -112,6 +113,7 @@ export async function createStarNode(config: StarNodeConfig): Promise<FhsNode> {
 
   for (const addr of bootstrapAddrs) {
     const target = multiaddr(addr);
+    const bootstrapPeerId = target.toString().match(/\/p2p\/([^/]+)$/)?.[1];
     let retryTimer: ReturnType<typeof setInterval> | undefined;
 
     const dialBootstrap = async (): Promise<void> => {
@@ -121,6 +123,18 @@ export async function createStarNode(config: StarNodeConfig): Promise<FhsNode> {
         if (retryTimer) clearInterval(retryTimer);
         retryTimer = undefined;
         console.log(`[p2p] bootstrap conectado: ${addr}`);
+        // Sin esto, ConnectionManager puede podar la conexión por
+        // inactividad tras el primer connect exitoso, y el retry de arriba
+        // ya no dispara (el timer se limpia). El tag "keep-alive-*" es el
+        // mecanismo nativo de libp2p tanto para proteger la conexión de la
+        // poda como para redial automático si igual se desconecta.
+        if (bootstrapPeerId) {
+          node.peerStore
+            .merge(peerIdFromString(bootstrapPeerId), {
+              tags: { [`${KEEP_ALIVE}-bootstrap`]: { value: 100 } },
+            })
+            .catch(() => {});
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.warn(`[p2p] bootstrap no disponible (${addr}): ${message}`);
