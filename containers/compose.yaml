@@ -12,6 +12,15 @@
 # Si Atlas corre en la misma máquina fuera de contenedores, usa
 # host.containers.internal (podman) / host.docker.internal (docker).
 #
+# network_mode: host en los 4 servicios (E2E-023, ver
+# galaxIA-Core/docs/historial-incidencias-e2e.md): en podman rootless
+# (pasta/slirp4netns) un contenedor no puede alcanzar a otro contenedor del
+# MISMO host a través de la IP externa publicada del host (hairpin NAT no
+# soportado). Cualquiera de estos providers puede terminar co-ubicado con
+# Atlas según la topología elegida — host networking evita el problema en
+# todos los casos (mismo host o distinto) y de paso simplifica LLAMA_CPP_URL
+# a localhost sin el truco de host.containers.internal.
+#
 # @rafex/galaxia-fhs-protocol se instala desde GitHub Packages durante el
 # build — requiere un token con permiso read:packages disponible en la
 # variable de entorno GH_TOKEN antes de levantar (ej. `export
@@ -30,8 +39,7 @@ services:
       secrets:
         - gh_token
     container_name: fhs-star
-    ports:
-      - "4002:4002"
+    network_mode: host
     environment:
       - FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4002/tls/ws
       - TLS_CERT_PATH=/certs/e2e.crt
@@ -40,14 +48,12 @@ services:
       # Multiaddr del Atlas bootstrap — levantar Atlas primero y anotar su PeerID
       # Ejemplo: /ip4/192.168.1.139/tcp/4001/tls/ws
       - FHS_BOOTSTRAP_ADDRS=${FHS_BOOTSTRAP_ADDRS:-}
-      - LLAMA_CPP_URL=${LLAMA_CPP_URL:-http://host.containers.internal:43110/v1}
+      - LLAMA_CPP_URL=${LLAMA_CPP_URL:-http://127.0.0.1:43110/v1}
       - PROVIDER_NAME=${PROVIDER_NAME:-Star FHS Bastion}
       - IDENTITY_KEY_PATH=/data/.fhs-identity-star.json
     volumes:
       - star-data:/data
       - ${CERTS_DIR:-../certs}:/certs:ro
-    extra_hosts:
-      - "host.containers.internal:host-gateway"
     restart: unless-stopped
 
   satellite-ocr:
@@ -57,8 +63,7 @@ services:
       secrets:
         - gh_token
     container_name: fhs-satellite-ocr
-    ports:
-      - "4003:4003"
+    network_mode: host
     environment:
       - FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4003/tls/ws
       - TLS_CERT_PATH=/certs/e2e.crt
@@ -80,8 +85,7 @@ services:
       secrets:
         - gh_token
     container_name: fhs-rag-provider
-    ports:
-      - "4005:4005"
+    network_mode: host
     environment:
       - FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4005/tls/ws
       - TLS_CERT_PATH=/certs/e2e.crt
@@ -93,8 +97,6 @@ services:
     volumes:
       - rag-data:/data
       - ${CERTS_DIR:-../certs}:/certs:ro
-    extra_hosts:
-      - "host.containers.internal:host-gateway"
     restart: unless-stopped
 
   kb-provider:
@@ -104,8 +106,7 @@ services:
       secrets:
         - gh_token
     container_name: fhs-kb-provider
-    ports:
-      - "4006:4006"
+    network_mode: host
     environment:
       - FHS_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4006/tls/ws
       - TLS_CERT_PATH=/certs/e2e.crt
@@ -118,8 +119,6 @@ services:
     volumes:
       - kb-data:/data
       - ${CERTS_DIR:-../certs}:/certs:ro
-    extra_hosts:
-      - "host.containers.internal:host-gateway"
     restart: unless-stopped
 
 secrets:
