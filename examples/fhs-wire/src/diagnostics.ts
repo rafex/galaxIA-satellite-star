@@ -51,6 +51,7 @@ export interface DiagNode {
     merge(peerId: ReturnType<typeof peerIdFromString>, data: { tags: Record<string, { value: number }> }): Promise<unknown>;
   };
   addEventListener(type: string, listener: (event: { detail: unknown }) => void, options?: { once?: boolean }): void;
+  removeEventListener?(type: string, listener: (event: { detail: unknown }) => void): void;
   services?: { pubsub?: PubsubLike };
 }
 
@@ -106,11 +107,13 @@ export interface BootstrapDialOptions {
 }
 
 /**
- * Dialea cada bootstrap con reintento y backoff hasta conectar, registrando
- * cada fallo con su motivo. Al conectar, marca el peer como keep-alive para
- * que libp2p lo proteja de la poda y lo redialee solo si la conexión cae.
- * Devuelve una función para detener los reintentos (también se detienen al
- * parar el nodo).
+ * Mantiene la conexión a cada bootstrap: dialea con reintento y backoff hasta
+ * conectar, registrando cada fallo con su motivo, y si la conexión se cae
+ * vuelve a empezar. No basta con el tag keep-alive de libp2p: en el
+ * laboratorio, tras reiniciar Atlas (~13 s caído) los providers agotaron sus
+ * reintentos de keep-alive y quedaron aislados sin avisar. El tag se sigue
+ * poniendo (protege la conexión de la poda por inactividad).
+ * Devuelve una función para detener todo (también se detiene al parar el nodo).
  */
 export function dialBootstraps(
   node: DiagNode,
@@ -121,30 +124,59 @@ export function dialBootstraps(
   const initialDelayMs = options.initialDelayMs ?? 2_000;
   const maxDelayMs = options.maxDelayMs ?? 30_000;
   let stopped = false;
-  const sleepers = new Set<{ timer: ReturnType<typeof setTimeout>; resolve: () => void }>();
+  const waiters = new Set<() => void>();
 
   const stop = (): void => {
     stopped = true;
-    for (const sleeper of sleepers) {
-      clearTimeout(sleeper.timer);
-      sleeper.resolve();
-    }
-    sleepers.clear();
+    for (const wake of waiters) wake();
+    waiters.clear();
   };
   node.addEventListener("stop", stop, { once: true });
 
+  /** Espera `ms` o hasta que se detenga todo, lo que ocurra primero. */
   const sleep = (ms: number): Promise<void> => new Promise((resolve) => {
-    const sleeper = {
-      timer: setTimeout(() => {
-        sleepers.delete(sleeper);
-        resolve();
-      }, ms),
-      resolve,
+    const wake = (): void => {
+      clearTimeout(timer);
+      waiters.delete(wake);
+      resolve();
     };
-    sleepers.add(sleeper);
+    const timer = setTimeout(wake, ms);
+    waiters.add(wake);
   });
 
-  const dialLoop = async (addr: string): Promise<void> => {
+  /** Resuelve cuando se cierra la última conexión con `peerId`, o al detener todo. */
+  const disconnected = (peerId: string): Promise<void> => new Promise((resolve) => {
+    const listener = (event: { detail: unknown }): void => {
+      if (String(event.detail) === peerId) wake();
+    };
+    const wake = (): void => {
+      node.removeEventListener?.("peer:disconnect", listener);
+      waiters.delete(wake);
+      resolve();
+    };
+    node.addEventListener("peer:disconnect", listener);
+    waiters.add(wake);
+  });
+
+  /** Reintenta hasta conectar; false si se detuvo antes. */
+  const connect = async (address: ReturnType<typeof multiaddr>, addr: string, reconnecting: boolean): Promise<boolean> => {
+    for (let attempt = 1; !stopped; attempt++) {
+      try {
+        await node.dial(address);
+      } catch (error: unknown) {
+        if (stopped) return false;
+        const delay = Math.min(initialDelayMs * 2 ** (attempt - 1), maxDelayMs);
+        logger.warn(`bootstrap no disponible (${addr}): ${errorMessage(error)} — reintento ${attempt} en ${Math.round(delay / 1_000)} s`);
+        await sleep(delay);
+        continue;
+      }
+      logger.info(`bootstrap ${reconnecting ? "reconectado" : "conectado"}: ${addr}${attempt > 1 ? ` (intento ${attempt})` : ""}`);
+      return true;
+    }
+    return false;
+  };
+
+  const maintain = async (addr: string): Promise<void> => {
     let address: ReturnType<typeof multiaddr>;
     try {
       address = multiaddr(addr);
@@ -154,20 +186,10 @@ export function dialBootstraps(
     }
     const bootstrapPeerId = /\/p2p\/([^/]+)$/.exec(addr)?.[1];
 
-    for (let attempt = 1; !stopped; attempt++) {
-      try {
-        await node.dial(address);
-      } catch (error: unknown) {
-        if (stopped) return;
-        const delay = Math.min(initialDelayMs * 2 ** (attempt - 1), maxDelayMs);
-        logger.warn(`bootstrap no disponible (${addr}): ${errorMessage(error)} — reintento ${attempt} en ${Math.round(delay / 1_000)} s`);
-        await sleep(delay);
-        continue;
-      }
-
-      logger.info(`bootstrap conectado: ${addr}${attempt > 1 ? ` (intento ${attempt})` : ""}`);
+    for (let reconnecting = false; !stopped; reconnecting = true) {
+      if (!await connect(address, addr, reconnecting)) return;
       if (!bootstrapPeerId) {
-        logger.warn(`bootstrap sin /p2p/<peerId> (${addr}): conectado, pero sin keep-alive libp2p no lo reconectará solo si la conexión cae`);
+        logger.warn(`bootstrap sin /p2p/<peerId> (${addr}): conectado, pero sin el id no se puede detectar si la conexión cae`);
         return;
       }
       try {
@@ -175,13 +197,15 @@ export function dialBootstraps(
           tags: { [`${KEEP_ALIVE}-bootstrap`]: { value: 100 } },
         });
       } catch (error: unknown) {
-        logger.warn(`no se pudo marcar el bootstrap como keep-alive (${addr}): ${errorMessage(error)} — si la conexión cae no se reconectará solo`);
+        logger.warn(`no se pudo marcar el bootstrap como keep-alive (${addr}): ${errorMessage(error)}`);
       }
-      return;
+      await disconnected(bootstrapPeerId);
+      if (stopped) return;
+      logger.warn(`se perdió la conexión con el bootstrap (${addr}); reintentando`);
     }
   };
 
-  for (const addr of addrs) void dialLoop(addr);
+  for (const addr of addrs) void maintain(addr);
   return stop;
 }
 
