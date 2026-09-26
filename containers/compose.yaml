@@ -21,6 +21,13 @@
 # todos los casos (mismo host o distinto) y de paso simplifica LLAMA_CPP_URL
 # a localhost sin el truco de host.containers.internal.
 #
+# restart: always (E2E-024, docs/historial-incidencias-e2e.md de galaxIA-Core):
+# podman-restart.service solo arranca contenedores con restart-policy=always
+# ("podman start --all --filter restart-policy=always"). Con unless-stopped
+# NO vuelven tras reiniciar el host, aunque el servicio esté habilitado.
+# Requiere además, una vez por host: systemctl [--user] enable podman-restart.service
+# (y loginctl enable-linger <usuario> si es rootless).
+#
 # @rafex/galaxia-fhs-protocol se instala desde GitHub Packages durante el
 # build — requiere un token con permiso read:packages disponible en la
 # variable de entorno GH_TOKEN antes de levantar (ej. `export
@@ -54,7 +61,7 @@ services:
     volumes:
       - star-data:/data
       - ${CERTS_DIR:-../certs}:/certs:ro
-    restart: unless-stopped
+    restart: always
 
   satellite-ocr:
     build:
@@ -76,7 +83,7 @@ services:
     volumes:
       - ocr-data:/data
       - ${CERTS_DIR:-../certs}:/certs:ro
-    restart: unless-stopped
+    restart: always
 
   rag-provider:
     build:
@@ -97,7 +104,7 @@ services:
     volumes:
       - rag-data:/data
       - ${CERTS_DIR:-../certs}:/certs:ro
-    restart: unless-stopped
+    restart: always
 
   kb-provider:
     build:
@@ -119,7 +126,7 @@ services:
     volumes:
       - kb-data:/data
       - ${CERTS_DIR:-../certs}:/certs:ro
-    restart: unless-stopped
+    restart: always
 
 secrets:
   gh_token:
