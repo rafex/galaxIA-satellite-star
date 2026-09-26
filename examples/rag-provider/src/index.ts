@@ -29,7 +29,7 @@ import {
   type FhsNode,
   type FhsIdentity,
 } from "./p2p-node.js";
-import { sendEnvelope, decodeStream } from "@galaxia/fhs-wire";
+import { sendEnvelope, decodeStream, errorMessage, reportDropped } from "@galaxia/fhs-wire";
 import { RagBridge } from "./rag-bridge.js";
 
 // ── Configuración desde variables de entorno ──────────────────────────────────
@@ -98,9 +98,19 @@ function pubsubSubscribe(
     "message",
     (evt: { detail: { topic: string; data: Uint8Array } }) => {
       if (evt.detail.topic !== topic) return;
+      let message: TopicMessage;
       try {
-        handler(decodeTopic(topic, evt.detail.data));
-      } catch { /* ignorar frames malformados */ }
+        message = decodeTopic(topic, evt.detail.data);
+      } catch (error: unknown) {
+        // Firma ausente/inválida o protobuf corrupto: antes se ignoraba sin rastro.
+        reportDropped(`[pubsub] mensaje descartado en ${topic}`, error);
+        return;
+      }
+      try {
+        handler(message);
+      } catch (error: unknown) {
+        console.error(`[pubsub] error procesando ${topic}: ${errorMessage(error)}`);
+      }
     }
   );
 }
@@ -283,10 +293,11 @@ async function main(): Promise<void> {
     expiresAt: BigInt(Date.now() + 24 * 60 * 60 * 1_000),
     fhsVersion: "0.1",
   });
-  await dhtPut(node, `/fhs/beacon/${identity.did}`, beaconPayload).catch((e: unknown) => {
-    console.warn("[dht] error publicando beacon:", e);
-  });
-  console.log("[dht] beacon publicado");
+  // Antes se imprimía "beacon publicado" incluso cuando la publicación fallaba.
+  await dhtPut(node, `/fhs/beacon/${identity.did}`, beaconPayload).then(
+    () => console.log("[dht] beacon publicado"),
+    (error: unknown) => console.warn(`[dht] no se pudo publicar el beacon: ${errorMessage(error)} (Navigator usará las direcciones del anuncio GossipSub)`),
+  );
 
   const bridge = new RagBridge();
 

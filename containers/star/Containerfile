@@ -24,6 +24,10 @@ RUN npm run build -w examples/fhs-wire && npm run build -w examples/star-example
 FROM docker.io/library/node:24-alpine
 WORKDIR /app
 ENV NODE_ENV=production
+# Errores internos de libp2p (TLS rechazado, upgrades fallidos, dials
+# fallidos) — sin esto se pierden en silencio. Solo nivel error; para depurar
+# a fondo: -e DEBUG='libp2p:*' (muy verboso). Apagar: -e DEBUG=
+ENV DEBUG=libp2p:*:error
 
 RUN apk add --no-cache curl
 

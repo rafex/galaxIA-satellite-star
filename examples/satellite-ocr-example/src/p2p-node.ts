@@ -4,6 +4,7 @@
  */
 
 import { createLibp2p } from "libp2p";
+import { attachNodeDiagnostics, consoleDiagLogger, dialBootstraps, type DiagNode } from "@galaxia/fhs-wire";
 import { webSockets } from "@libp2p/websockets";
 import { noise } from "@chainsafe/libp2p-noise";
 import { yamux } from "@chainsafe/libp2p-yamux";
@@ -16,9 +17,7 @@ import {
   privateKeyToProtobuf,
   privateKeyFromProtobuf,
 } from "@libp2p/crypto/keys";
-import { KEEP_ALIVE } from "@libp2p/interface";
-import { peerIdFromPrivateKey, peerIdFromString } from "@libp2p/peer-id";
-import { multiaddr } from "@multiformats/multiaddr";
+import { peerIdFromPrivateKey } from "@libp2p/peer-id";
 import { base58btc } from "multiformats/bases/base58";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fromString, toString } from "uint8arrays";
@@ -109,46 +108,13 @@ export async function createStarNode(config: StarNodeConfig): Promise<FhsNode> {
     },
   });
 
+  const logger = consoleDiagLogger("satellite-p2p");
+  attachNodeDiagnostics(node as DiagNode, logger);
   await node.start();
-
-  for (const addr of bootstrapAddrs) {
-    const target = multiaddr(addr);
-    const bootstrapPeerId = target.toString().match(/\/p2p\/([^/]+)$/)?.[1];
-    let retryTimer: ReturnType<typeof setInterval> | undefined;
-
-    const dialBootstrap = async (): Promise<void> => {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await node.dial(target as any);
-        if (retryTimer) clearInterval(retryTimer);
-        retryTimer = undefined;
-        console.log(`[p2p] bootstrap conectado: ${addr}`);
-        // Sin esto, ConnectionManager puede podar la conexión por
-        // inactividad tras el primer connect exitoso, y el retry de arriba
-        // ya no dispara (el timer se limpia). El tag "keep-alive-*" es el
-        // mecanismo nativo de libp2p tanto para proteger la conexión de la
-        // poda como para redial automático si igual se desconecta.
-        if (bootstrapPeerId) {
-          node.peerStore
-            .merge(peerIdFromString(bootstrapPeerId), {
-              tags: { [`${KEEP_ALIVE}-bootstrap`]: { value: 100 } },
-            })
-            .catch(() => {});
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.warn(`[p2p] bootstrap no disponible (${addr}): ${message}`);
-      }
-    };
-
-    // El contenedor puede arrancar antes de que Atlas esté listo o antes de
-    // que el operador abra el puerto en el firewall. Mantener el reintento
-    // evita que el provider quede aislado por un único fallo de arranque.
-    void dialBootstrap();
-    retryTimer = setInterval(() => {
-      void dialBootstrap();
-    }, 10_000);
-  }
+  // Reintenta con backoff hasta conectar y registra cada fallo (antes, en
+  // star/kb/rag era un solo intento silencioso: si Atlas no escuchaba todavía,
+  // el provider quedaba aislado sin dejar rastro).
+  dialBootstraps(node as DiagNode, bootstrapAddrs, logger);
 
   return node;
 }

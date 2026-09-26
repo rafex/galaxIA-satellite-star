@@ -3,6 +3,7 @@
 import { create } from "@bufbuild/protobuf";
 import { createHash } from "node:crypto";
 import * as lp from "it-length-prefixed";
+import { reportDropped } from "./diagnostics.js";
 import {
   FhsProto,
   decodeEnvelope,
@@ -297,11 +298,18 @@ export function sendEnvelope<T extends keyof PayloadValueByType>(
 export async function* decodeStream(stream: AsyncIterable<Uint8Array>): AsyncGenerator<FhsProto.Envelope> {
   const decoded = lp.decode(stream) as unknown as AsyncIterable<{ slice(): Uint8Array }>;
   for await (const chunk of decoded) {
+    let envelope: FhsProto.Envelope;
     try {
-      const envelope = decodeEnvelope(chunk.slice());
-      if (!verifyEnvelope(envelope)) continue;
-      yield envelope;
-    } catch { /* frame inválido o firma inválida */ }
+      envelope = decodeEnvelope(chunk.slice());
+    } catch (error: unknown) {
+      reportDropped("[stream] frame malformado descartado", error);
+      continue;
+    }
+    if (!verifyEnvelope(envelope)) {
+      reportDropped("[stream] frame con firma inválida descartado", `payload ${envelope.payload.case ?? "desconocido"} de ${envelope.sourcePeerId || "origen desconocido"}`);
+      continue;
+    }
+    yield envelope;
   }
 }
 
@@ -389,3 +397,5 @@ export function encodeDht(input: FhsProto.DhtBeaconRecord): Uint8Array {
   const signature = signer ? sign(dhtBeaconSignaturePayload(input.did, beacon.hash, Number(publishedAt), Number(expiresAt))) : new Uint8Array();
   return encodeMessage(FhsProto.DhtBeaconRecordSchema, create(FhsProto.DhtBeaconRecordSchema, { ...unsigned, signature }));
 }
+
+export * from "./diagnostics.js";
