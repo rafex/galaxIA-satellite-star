@@ -66,6 +66,15 @@ export function errorMessage(error: unknown): string {
     const withCode = typeof code === "string" && !error.message.includes(code) ? ` (${code})` : "";
     return `${name}${error.message}${withCode}`;
   }
+  if (typeof error === "object" && error !== null && typeof (error as { type?: unknown }).type === "string") {
+    // ErrorEvent del cliente WebSocket (paquete `ws`): no es un Error, así que
+    // String() daba "[object ErrorEvent]". Trae el error real en `.error`.
+    const event = error as { type: string; error?: unknown; message?: unknown; target?: { url?: unknown } };
+    if (event.error !== undefined && event.error !== error) return errorMessage(event.error);
+    const url = typeof event.target?.url === "string" ? ` (${event.target.url})` : "";
+    if (typeof event.message === "string" && event.message) return `${event.message}${url}`;
+    return `evento "${event.type}"${url}`;
+  }
   return String(error);
 }
 
