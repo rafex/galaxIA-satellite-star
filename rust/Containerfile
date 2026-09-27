@@ -14,9 +14,11 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY rust/ .
+# Todos los binarios en una capa: las demás imágenes la reutilizan del caché
+# (en la Raspberry Pi, compilar una vez en vez de tres).
+RUN cargo build --release --workspace --bins
 ARG BIN
-RUN test -n "$BIN" && cargo build --release --bin "$BIN" \
- && cp "target/release/$BIN" /usr/local/bin/provider
+RUN test -n "$BIN" && cp "target/release/$BIN" /usr/local/bin/provider
 
 # Star, RAG: solo el binario.
 FROM docker.io/library/debian:bookworm-slim AS provider
