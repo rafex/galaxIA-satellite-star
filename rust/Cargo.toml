@@ -1,0 +1,25 @@
+# Providers de referencia en Rust (Star, KB, RAG, OCR) sobre galaxia-fhs.
+# Reemplazan a examples/*-example (TypeScript) con el mismo wire y la misma
+# configuración por variables de entorno.
+[workspace]
+resolver = "2"
+members = ["kit", "star"]
+
+[workspace.dependencies]
+galaxia-fhs = { git = "https://github.com/rafex/galaxIA-SDK", branch = "main" }
+libp2p = { version = "0.57", default-features = false }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "net", "io-util", "process", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Copia de libp2p-websocket con tls::Config::from_rustls (verificador por pin
+# del certificado del laboratorio). Los [patch] de galaxia-fhs no se heredan.
+[patch.crates-io]
+libp2p-websocket = { git = "https://github.com/rafex/galaxIA-SDK", branch = "main" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

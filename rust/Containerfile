@@ -1,0 +1,31 @@
+# Imagen de un provider FHS en Rust (Star, KB, RAG u OCR).
+#
+#   podman build -f rust/Containerfile --build-arg BIN=galaxia-star -t galaxia-star-rs rust/
+#   podman build -f rust/Containerfile --build-arg BIN=galaxia-ocr \
+#     --build-arg RUNTIME_PACKAGES="tesseract-ocr tesseract-ocr-spa poppler-utils" -t galaxia-ocr-rs rust/
+#
+# galaxia-fhs (galaxIA-SDK, por git) compila el IDL con prost-build: necesita
+# protoc. Para aarch64 (Raspberry Pi) conviene construir en otra máquina con
+# --platform linux/arm64: rust-libp2p en release no cabe en 1 GB de RAM.
+FROM docker.io/library/rust:1.97-bookworm AS build
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends protobuf-compiler \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY . .
+ARG BIN
+RUN test -n "$BIN" && cargo build --release --bin "$BIN" \
+ && cp "target/release/$BIN" /usr/local/bin/provider
+
+FROM docker.io/library/debian:bookworm-slim
+ARG RUNTIME_PACKAGES=""
+RUN if [ -n "$RUNTIME_PACKAGES" ]; then \
+      apt-get update \
+      && apt-get install -y --no-install-recommends $RUNTIME_PACKAGES \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
+ARG COMMIT_HASH=dev
+ARG BUILD_DATE=""
+ENV COMMIT_HASH=$COMMIT_HASH BUILD_DATE=$BUILD_DATE
+COPY --from=build /usr/local/bin/provider /usr/local/bin/provider
+ENTRYPOINT ["/usr/local/bin/provider"]

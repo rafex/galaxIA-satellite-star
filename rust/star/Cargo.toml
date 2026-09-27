@@ -1,0 +1,17 @@
+[package]
+name = "galaxia-star"
+version = "0.1.0"
+edition = "2021"
+description = "Star FHS en Rust: misiones de chat hacia llama.cpp con streaming"
+license = "MIT"
+publish = false
+
+[dependencies]
+galaxia-provider-kit = { path = "../kit" }
+galaxia-fhs.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror = "2"
+tokio.workspace = true
+tracing.workspace = true
