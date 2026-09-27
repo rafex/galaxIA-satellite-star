@@ -11,6 +11,7 @@ contenedor se cambia por otro conservando su DID.
 | `star` | `galaxia-star` | `examples/star-example` | en producción (Bastion) |
 | `kb` | `galaxia-kb` | `examples/kb-provider` | listo |
 | `rag` | `galaxia-rag` | `examples/rag-provider` | listo |
+| `ocr` | `galaxia-ocr` | `examples/satellite-ocr-example` | listo |
 
 ## Star
 
@@ -35,6 +36,15 @@ Mismo motor que los TS: solapamiento de palabras (Jaccard), no embeddings
 que el Navigator usa para recomendarla. RAG guarda un índice en memoria por
 conversación y documento: `document_index` acumula y `document_query` acepta
 `topK` o `top_k`.
+
+## OCR
+
+`extract_text` recibe el `ArtifactRef` (inline o IPFS). Los PDFs digitales
+salen de su capa de texto (`pdftotext`); los escaneados se rasterizan con
+`pdftoppm` a 200 ppp y pasan página por página por Tesseract (`spa+eng` por
+defecto). Cada comando tiene 60 s. La imagen (`--target ocr`) instala
+`tesseract-ocr-spa` y `poppler-utils`; las pruebas usan las herramientas reales
+si están instaladas.
 
 ## Desarrollo
 

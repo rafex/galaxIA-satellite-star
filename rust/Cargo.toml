@@ -3,7 +3,7 @@
 # configuración por variables de entorno.
 [workspace]
 resolver = "2"
-members = ["kit", "star", "kb", "rag"]
+members = ["kit", "star", "kb", "rag", "ocr"]
 
 [workspace.dependencies]
 galaxia-fhs = { git = "https://github.com/rafex/galaxIA-SDK", branch = "main" }
