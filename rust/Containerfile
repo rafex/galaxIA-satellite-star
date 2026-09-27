@@ -1,31 +1,38 @@
-# Imagen de un provider FHS en Rust (Star, KB, RAG u OCR).
+# Imágenes de los providers FHS en Rust. Contexto: la raíz del repo.
 #
-#   podman build -f rust/Containerfile --build-arg BIN=galaxia-star -t galaxia-star-rs rust/
-#   podman build -f rust/Containerfile --build-arg BIN=galaxia-ocr \
-#     --build-arg RUNTIME_PACKAGES="tesseract-ocr tesseract-ocr-spa poppler-utils" -t galaxia-ocr-rs rust/
+#   podman build -f rust/Containerfile --target provider --build-arg BIN=galaxia-star -t galaxia-star-rs .
+#   podman build -f rust/Containerfile --target provider --build-arg BIN=galaxia-rag  -t galaxia-rag-rs .
+#   podman build -f rust/Containerfile --target kb       --build-arg BIN=galaxia-kb   -t galaxia-kb-rs .
+#   podman build -f rust/Containerfile --target ocr      --build-arg BIN=galaxia-ocr  -t galaxia-ocr-rs .
 #
 # galaxia-fhs (galaxIA-SDK, por git) compila el IDL con prost-build: necesita
-# protoc. Para aarch64 (Raspberry Pi) conviene construir en otra máquina con
-# --platform linux/arm64: rust-libp2p en release no cabe en 1 GB de RAM.
+# protoc. rust-libp2p en release no cabe en 1 GB de RAM (Raspi3B): las imágenes
+# aarch64 se construyen en la Raspi4B y se copian con podman save | load.
 FROM docker.io/library/rust:1.97-bookworm AS build
 RUN apt-get update \
  && apt-get install -y --no-install-recommends protobuf-compiler \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-COPY . .
+COPY rust/ .
 ARG BIN
 RUN test -n "$BIN" && cargo build --release --bin "$BIN" \
  && cp "target/release/$BIN" /usr/local/bin/provider
 
-FROM docker.io/library/debian:bookworm-slim
-ARG RUNTIME_PACKAGES=""
-RUN if [ -n "$RUNTIME_PACKAGES" ]; then \
-      apt-get update \
-      && apt-get install -y --no-install-recommends $RUNTIME_PACKAGES \
-      && rm -rf /var/lib/apt/lists/*; \
-    fi
+# Star, RAG: solo el binario.
+FROM docker.io/library/debian:bookworm-slim AS provider
 ARG COMMIT_HASH=dev
 ARG BUILD_DATE=""
 ENV COMMIT_HASH=$COMMIT_HASH BUILD_DATE=$BUILD_DATE
 COPY --from=build /usr/local/bin/provider /usr/local/bin/provider
 ENTRYPOINT ["/usr/local/bin/provider"]
+
+# KB: el corpus de ejemplo viaja en la imagen, como en la imagen TS.
+FROM provider AS kb
+COPY examples/kb-provider/content /app/content
+ENV KB_CONTENT_DIR=/app/content
+
+# OCR: Tesseract (español) y poppler para rasterizar PDFs.
+FROM provider AS ocr
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-spa poppler-utils \
+ && rm -rf /var/lib/apt/lists/*

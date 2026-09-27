@@ -1,0 +1,7 @@
+# Contexto de build de las imágenes (TS y Rust): nada de dependencias ni
+# artefactos locales; cada Containerfile instala y compila dentro.
+.git
+node_modules
+**/node_modules
+**/dist
+rust/target

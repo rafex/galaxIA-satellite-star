@@ -984,15 +984,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "galaxia-kb"
+version = "0.1.0"
+dependencies = [
+ "galaxia-fhs",
+ "galaxia-provider-kit",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "galaxia-provider-kit"
 version = "0.1.0"
 dependencies = [
  "galaxia-fhs",
  "libp2p",
  "rustls",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "galaxia-rag"
+version = "0.1.0"
+dependencies = [
+ "galaxia-fhs",
+ "galaxia-provider-kit",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

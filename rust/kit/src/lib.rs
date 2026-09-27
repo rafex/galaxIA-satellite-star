@@ -17,6 +17,9 @@ use libp2p::Multiaddr;
 
 pub use galaxia_fhs;
 
+pub mod overlap;
+pub mod tools;
+
 /// Configuración de red común a todos los providers.
 #[derive(Clone, Debug)]
 pub struct NodeEnv {

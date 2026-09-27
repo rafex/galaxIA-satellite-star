@@ -8,7 +8,9 @@ contenedor se cambia por otro conservando su DID.
 | Crate | Binario | Reemplaza a | Estado |
 |---|---|---|---|
 | `kit` | — | `p2p-node.ts` + ciclo de anuncio/puja de cada provider | listo |
-| `star` | `galaxia-star` | `examples/star-example` | listo |
+| `star` | `galaxia-star` | `examples/star-example` | en producción (Bastion) |
+| `kb` | `galaxia-kb` | `examples/kb-provider` | listo |
+| `rag` | `galaxia-rag` | `examples/rag-provider` | listo |
 
 ## Star
 
@@ -25,6 +27,15 @@ Diferencias con el TS: los `tool_calls` de `chat_completed` llevan los
 argumentos como `DynamicValue` (el TS los mandaba como texto), y la generación
 se corta si el Navigator cierra el stream.
 
+## KB y RAG
+
+Mismo motor que los TS: solapamiento de palabras (Jaccard), no embeddings
+(DEC-0026). KB carga los `.txt` de `KB_CONTENT_DIR` al arrancar y responde
+`kb_query` con `{text, score, citation.documentTitle}`; `KB_DESCRIPTION` es lo
+que el Navigator usa para recomendarla. RAG guarda un índice en memoria por
+conversación y documento: `document_index` acumula y `document_query` acepta
+`topK` o `top_k`.
+
 ## Desarrollo
 
 ```sh
@@ -32,5 +43,6 @@ cd rust
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
-podman build -f Containerfile --build-arg BIN=galaxia-star -t galaxia-star-rs .
+# desde la raíz del repo; ver las etapas en rust/Containerfile
+podman build -f rust/Containerfile --target provider --build-arg BIN=galaxia-star -t galaxia-star-rs .
 ```

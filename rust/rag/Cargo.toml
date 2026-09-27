@@ -1,0 +1,14 @@
+[package]
+name = "galaxia-rag"
+version = "0.1.0"
+edition = "2021"
+description = "Satellite RAG en Rust: índice por conversación (document_index, document_query)"
+license = "MIT"
+publish = false
+
+[dependencies]
+galaxia-provider-kit = { path = "../kit" }
+galaxia-fhs.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
