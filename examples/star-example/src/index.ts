@@ -31,6 +31,7 @@ import {
 } from "./p2p-node.js";
 import { sendEnvelope, decodeStream, errorMessage, reportDropped } from "@galaxia/fhs-wire";
 import { LlmBridge } from "./llm-bridge.js";
+import { toLlmMessages, toLlmTools } from "./llm-request.js";
 
 // ── Configuración desde variables de entorno ──────────────────────────────────
 
@@ -47,8 +48,28 @@ const FHS_ANNOUNCE_ADDRS = process.env.FHS_ANNOUNCE_ADDRS
 const LLAMA_CPP_URL = process.env.LLAMA_CPP_URL ?? "http://localhost:43110/v1";
 const PROVIDER_NAME = process.env.PROVIDER_NAME ?? "Star FHS";
 const MODEL_ID = process.env.MODEL_ID ?? "default";
-const MODEL_CONTEXT_WINDOW = Number(process.env.MODEL_CONTEXT_WINDOW ?? 4096);
+const MODEL_CONTEXT_WINDOW = positiveInt("MODEL_CONTEXT_WINDOW", 4096);
+// Tokens de salida por respuesta. Antes se pedía max_tokens = contexto
+// completo (4096): el prompt ya ocupa parte de ese contexto, así que el valor
+// nunca era alcanzable y solo dejaba sin techo respuestas muy largas en CPU.
+const MAX_OUTPUT_TOKENS = Math.min(
+  positiveInt("MAX_OUTPUT_TOKENS", 1024),
+  Math.max(1, Math.floor(MODEL_CONTEXT_WINDOW / 2)),
+);
+const LLM_FIRST_TOKEN_TIMEOUT_MS = positiveInt("LLM_FIRST_TOKEN_TIMEOUT_MS", 300_000);
+const LLM_IDLE_TIMEOUT_MS = positiveInt("LLM_IDLE_TIMEOUT_MS", 60_000);
 const ADVERTISE_INTERVAL_MS = 30_000;
+
+function positiveInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    console.warn(`[star] ${name}=${raw} no es un entero positivo; se usa ${fallback}`);
+    return fallback;
+  }
+  return value;
+}
 
 // ── PubSub helpers ────────────────────────────────────────────────────────────
 
@@ -148,20 +169,19 @@ async function handleChatStream(
   }));
 
   // 5. Generar respuesta con streaming LLM
-  const generateRequest = {
-    model: req.model ?? MODEL_ID,
-    messages: req.messages as Parameters<LlmBridge["stream"]>[0]["messages"],
-    tools: req.tools as unknown as Parameters<LlmBridge["stream"]>[0]["tools"],
-    temperature: 0.7,
-    max_tokens: MODEL_CONTEXT_WINDOW,
-  };
-
   const abortCtrl = new AbortController();
   let fullContent = "";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let toolCalls: any[] = [];
 
   try {
+    const generateRequest = {
+      model: req.model || MODEL_ID,
+      messages: toLlmMessages(req.messages),
+      tools: toLlmTools(req.tools),
+      temperature: 0.7,
+      max_tokens: MAX_OUTPUT_TOKENS,
+    };
     const gen = bridge.stream(generateRequest, abortCtrl.signal);
 
     while (true) {
@@ -246,7 +266,11 @@ async function main(): Promise<void> {
     (error: unknown) => console.warn(`[dht] no se pudo publicar el beacon: ${errorMessage(error)} (Navigator usará las direcciones del anuncio GossipSub)`),
   );
 
-  const bridge = new LlmBridge(LLAMA_CPP_URL);
+  const bridge = new LlmBridge(LLAMA_CPP_URL, {
+    firstTokenMs: LLM_FIRST_TOKEN_TIMEOUT_MS,
+    idleMs: LLM_IDLE_TIMEOUT_MS,
+  });
+  console.log(`[star] LLM ${LLAMA_CPP_URL} · max_tokens ${MAX_OUTPUT_TOKENS} · plazos: primer token ${LLM_FIRST_TOKEN_TIMEOUT_MS / 1_000} s, silencio ${LLM_IDLE_TIMEOUT_MS / 1_000} s`);
 
   // Anuncio GossipSub cada 30s
   const advertise = (): void => {

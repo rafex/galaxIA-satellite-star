@@ -18,6 +18,10 @@ Nodo `type: "llm"` (Star) que expone un modelo de lenguaje vía protocolo FHS po
 | `LLM_PROVIDER_PORT` | `43111` | Puerto del servidor de chat FHS de este nodo. |
 | `MODEL_ID` / `MODEL_DISPLAY_NAME` | `qwen2.5-coder-3b-instruct` | Identificador del modelo servido, tal como lo anuncia el manifiesto. |
 | `MODEL_TOOL_CALLING_SUPPORTED` | `true` | Si el modelo soporta tool-calling (afecta el manifiesto y el bridge). |
+| `MODEL_CONTEXT_WINDOW` | `4096` | Contexto del modelo en tokens. Acota `MAX_OUTPUT_TOKENS` a la mitad del contexto. |
+| `MAX_OUTPUT_TOKENS` | `1024` | `max_tokens` que se pide a `llama-server` por respuesta. |
+| `LLM_FIRST_TOKEN_TIMEOUT_MS` | `300000` | Espera máxima hasta el primer fragmento: incluye leer el prompt, que en CPU viejo es lo lento. |
+| `LLM_IDLE_TIMEOUT_MS` | `60000` | Silencio máximo entre fragmentos una vez que empezó a generar. Una respuesta larga que sigue avanzando no se corta. |
 | `TLS_CERT_PATH` / `TLS_KEY_PATH` | — | Opcional, habilita `wss://` con certificado autofirmado (ver `docs/tls-autofirmado.md` en `galaxIA`). |
 
 ## Correr
