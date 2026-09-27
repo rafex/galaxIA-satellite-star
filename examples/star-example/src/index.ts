@@ -171,10 +171,15 @@ async function handleChatStream(
   // 5. Generar respuesta con streaming LLM
   const abortCtrl = new AbortController();
   let fullContent = "";
+  let firstDeltaMs: number | null = null;
+  let promptBuildMs = 0;
+  let generationStartedAt = 0;
+  const missionStartedAt = performance.now();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let toolCalls: any[] = [];
 
   try {
+    const promptStartedAt = performance.now();
     const generateRequest = {
       model: req.model || MODEL_ID,
       messages: toLlmMessages(req.messages),
@@ -182,6 +187,8 @@ async function handleChatStream(
       temperature: 0.7,
       max_tokens: MAX_OUTPUT_TOKENS,
     };
+    promptBuildMs = performance.now() - promptStartedAt;
+    generationStartedAt = performance.now();
     const gen = bridge.stream(generateRequest, abortCtrl.signal);
 
     while (true) {
@@ -195,6 +202,7 @@ async function handleChatStream(
         }
         break;
       }
+      firstDeltaMs ??= performance.now() - generationStartedAt;
       const delta = create(FhsProto.ChatDeltaMessageSchema, {
         missionId: req.missionId,
         delta: chunk.value,
@@ -206,6 +214,13 @@ async function handleChatStream(
     const errMsg = err instanceof Error ? err.message : String(err);
     sendEnvelope(stream, "chat_error", create(FhsProto.ChatErrorMessageSchema, { missionId: req.missionId, error: errMsg }));
     console.error(`[mission] ${req.missionId} error LLM:`, err);
+    console.info("[fhs-star-perf]", {
+      missionId: req.missionId,
+      promptBuildMs,
+      firstDeltaMs,
+      missionTotalMs: performance.now() - missionStartedAt,
+      success: false,
+    });
     return;
   }
 
@@ -218,6 +233,15 @@ async function handleChatStream(
   });
   sendEnvelope(stream, "chat_completed", completed);
   console.log(`[mission] ${req.missionId} completada (${fullContent.length} chars)`);
+  console.info("[fhs-star-perf]", {
+    missionId: req.missionId,
+    model: req.model || MODEL_ID,
+    promptBuildMs,
+    firstDeltaMs,
+    missionTotalMs: performance.now() - missionStartedAt,
+    outputChars: fullContent.length,
+    success: true,
+  });
 }
 
 // ── Bootstrap + ciclo P2P ─────────────────────────────────────────────────────
