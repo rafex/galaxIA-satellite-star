@@ -9,9 +9,9 @@ contenedor se cambia por otro conservando su DID.
 |---|---|---|---|
 | `kit` | — | `p2p-node.ts` + ciclo de anuncio/puja de cada provider | listo |
 | `star` | `galaxia-star` | `examples/star-example` | en producción (Bastion) |
-| `kb` | `galaxia-kb` | `examples/kb-provider` | listo |
-| `rag` | `galaxia-rag` | `examples/rag-provider` | listo |
-| `ocr` | `galaxia-ocr` | `examples/satellite-ocr-example` | listo |
+| `kb` | `galaxia-kb` | `examples/kb-provider` | en producción (Raspi3B) |
+| `rag` | `galaxia-rag` | `examples/rag-provider` | en producción (Raspi3B) |
+| `ocr` | `galaxia-ocr` | `examples/satellite-ocr-example` | en producción (Raspi4B) |
 
 ## Star
 
@@ -45,6 +45,17 @@ salen de su capa de texto (`pdftotext`); los escaneados se rasterizan con
 defecto). Cada comando tiene 60 s. La imagen (`--target ocr`) instala
 `tesseract-ocr-spa` y `poppler-utils`; las pruebas usan las herramientas reales
 si están instaladas.
+
+## Despliegue en aarch64
+
+Las imágenes de KB, RAG y OCR se construyen en la Raspi4B (7.7 GB): compilar
+rust-libp2p en release no cabe en la Raspi3B (1 GB). La Raspi3B recibe las
+suyas con `podman save | podman load` a través de Bastion. Si los contenedores
+de la Raspi4B no resuelven DNS (E2E-033), compilar con `--network host`.
+
+```sh
+podman build --network host -f rust/Containerfile --target kb --build-arg BIN=galaxia-kb -t galaxia-kb-rs .
+```
 
 ## Desarrollo
 
