@@ -58,11 +58,7 @@ impl Star {
         reply.dispatch_ack(&mission).await;
 
         let started = Instant::now();
-        let model = if request.model.is_empty() {
-            self.model_id.clone()
-        } else {
-            request.model.clone()
-        };
+        let model = self.model_for(&request.model);
         let body = match self.body(&request, &model) {
             Ok(body) => body,
             Err(error) => {
@@ -117,6 +113,16 @@ impl Star {
                     "[fhs-star-perf]"
                 );
             }
+        }
+    }
+
+    /// El Navigator manda `""` o `"auto"` cuando no elige modelo: se usa el
+    /// del Star (`MODEL_ID`), que es el que queda en `[fhs-star-perf]`.
+    fn model_for(&self, requested: &str) -> String {
+        if requested.is_empty() || requested == "auto" {
+            self.model_id.clone()
+        } else {
+            requested.to_string()
         }
     }
 
@@ -233,6 +239,24 @@ mod tests {
         assert_eq!(terms.provider_type, "star");
         assert!(star.bid(&offer("tool_call", &["chat"])).is_none());
         assert!(star.bid(&offer("chat", &["document.ocr"])).is_none());
+    }
+
+    #[test]
+    fn auto_or_empty_model_means_the_star_model() {
+        let star = Star {
+            model_id: "Qwen3.5-2B-Q4_K_M".into(),
+            max_output_tokens: 16,
+            bridge: LlmBridge::new(
+                "http://127.0.0.1:1/v1",
+                Timeouts {
+                    first_token: Duration::from_secs(1),
+                    idle: Duration::from_secs(1),
+                },
+            ),
+        };
+        assert_eq!(star.model_for("auto"), "Qwen3.5-2B-Q4_K_M");
+        assert_eq!(star.model_for(""), "Qwen3.5-2B-Q4_K_M");
+        assert_eq!(star.model_for("otro"), "otro");
     }
 
     #[test]
