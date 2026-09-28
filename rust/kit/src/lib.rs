@@ -8,11 +8,12 @@ use std::sync::Arc;
 
 use galaxia_fhs::p2p::{
     identity::NodeIdentity,
-    node::{self, NodeConfig, Role},
+    mission,
+    node::{self, NodeConfig, NodeHandle, Role},
     provider::{self, Provider},
     tls,
 };
-use galaxia_fhs::protocol::fhs::Beacon;
+use galaxia_fhs::protocol::fhs::{Beacon, MissionOfferMessage};
 use libp2p::Multiaddr;
 
 pub use galaxia_fhs;
@@ -107,6 +108,12 @@ fn multiaddrs(name: &str, default: &[&str]) -> Result<Vec<Multiaddr>, String> {
         .collect()
 }
 
+/// Regla de puja común (DEC-0095): la oferta es del tipo esperado y **todas**
+/// sus `required_capabilities` están entre las que ofrece el provider.
+pub fn wants(offer: &MissionOfferMessage, mission_type: &str, offered: &[&str]) -> bool {
+    offer.mission_type == mission_type && mission::covers(&offer.required_capabilities, offered)
+}
+
 /// Logs con `RUST_LOG` (default `info`) y proveedor criptográfico de rustls.
 pub fn init() {
     let _ = tracing_subscriber::fmt()
@@ -131,6 +138,19 @@ pub async fn run<P: Provider>(
     beacon: Beacon,
     provider: Arc<P>,
 ) -> Result<(), String> {
+    run_with(name, env, identity, beacon, provider, |_| {}).await
+}
+
+/// Como [`run`], y entrega el nodo a `on_node` al arrancar (p. ej. para
+/// cambiar el beacon en caliente con `NodeHandle::set_advertise_beacon`).
+pub async fn run_with<P: Provider>(
+    name: &str,
+    env: NodeEnv,
+    identity: NodeIdentity,
+    beacon: Beacon,
+    provider: Arc<P>,
+    on_node: impl FnOnce(NodeHandle),
+) -> Result<(), String> {
     let trust: Vec<&std::path::Path> = env.extra_ca.iter().map(|p| p.as_path()).collect();
     let tls = tls::websocket_config(env.tls_cert.as_deref(), env.tls_key.as_deref(), &trust)
         .map_err(|e| e.to_string())?;
@@ -154,6 +174,7 @@ pub async fn run<P: Provider>(
         dht_beacon: Some(beacon),
     })
     .map_err(|e| e.to_string())?;
+    on_node(node.clone());
     tokio::spawn(provider::serve(node, provider));
     tracing::info!("[{name}] P2P activo");
     shutdown_signal().await;
@@ -179,5 +200,36 @@ async fn shutdown_signal() {
     tokio::select! {
         () = ctrl_c => {},
         () = terminate => {},
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bids_only_when_every_required_capability_is_offered() {
+        let offer = |kind: &str, caps: &[&str]| MissionOfferMessage {
+            mission_type: kind.into(),
+            required_capabilities: caps.iter().map(|c| c.to_string()).collect(),
+            ..Default::default()
+        };
+        let ocr = ["document.ocr"];
+        assert!(wants(
+            &offer("tool_call", &["document.ocr"]),
+            "tool_call",
+            &ocr
+        ));
+        assert!(!wants(
+            &offer("tool_call", &["document.ocr", "ipfs.native.public"]),
+            "tool_call",
+            &ocr
+        ));
+        assert!(wants(
+            &offer("tool_call", &["document.ocr", "ipfs.native.public"]),
+            "tool_call",
+            &["document.ocr", "ipfs.native.public"]
+        ));
+        assert!(!wants(&offer("chat", &["document.ocr"]), "tool_call", &ocr));
     }
 }

@@ -37,4 +37,8 @@ ENV KB_CONTENT_DIR=/app/content
 FROM provider AS ocr
 RUN apt-get update \
  && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-spa poppler-utils \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --uid 10001 --no-create-home galaxia
+# Sin privilegios (DEC-0095). La identidad en el volumen debe ser del uid
+# 10001; /tmp va como tmpfs (`--read-only --tmpfs /tmp`).
+USER galaxia

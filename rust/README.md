@@ -41,10 +41,36 @@ conversación y documento: `document_index` acumula y `document_query` acepta
 
 `extract_text` recibe el `ArtifactRef` (inline o IPFS). Los PDFs digitales
 salen de su capa de texto (`pdftotext`); los escaneados se rasterizan con
-`pdftoppm` a 200 ppp y pasan página por página por Tesseract (`spa+eng` por
-defecto). Cada comando tiene 60 s. La imagen (`--target ocr`) instala
-`tesseract-ocr-spa` y `poppler-utils`; las pruebas usan las herramientas reales
-si están instaladas.
+`pdftoppm` (a lo sumo 3000 px por página) y pasan página por página por
+Tesseract (`spa+eng` por defecto). La imagen (`--target ocr`) instala
+`tesseract-ocr-spa` y `poppler-utils` y corre como usuario sin privilegios
+(uid 10001); las pruebas usan las herramientas reales si están instaladas.
+
+Límites, también para adjuntos inline: adjunto de 32 MB (tope de protocolo),
+`pdfinfo` valida el PDF, no se hace OCR de más de 30 páginas, imágenes de
+hasta 40 MP (según su cabecera), texto de hasta 2 MB, 60 s por comando y 180 s
+por archivo.
+
+**IPFS (DEC-0095).** Un adjunto IPFS se lee **solo** por el Kubo local
+(`cat`), nunca por `gatewayUrl`. Variables: `IPFS_API_URL`
+(`http://127.0.0.1:5001`, solo loopback), `IPFS_API_TOKEN_FILE` (token del
+OCR, rutas `cat`, `id` y `swarm/peers`), `IPFS_NETWORK` (`public`) e
+`IPFS_EXPECTED_PEER` (PeerID del Kubo de Bastion). Mientras ese Kubo responde
+y el de Bastion está conectado, el beacon incluye `ipfs.native.<red>`; la
+salud se revisa cada 5 s y el beacon cambia en caliente. Sin Kubo, el OCR no
+puja por misiones IPFS y rechaza el `ArtifactRef` con `UNSUPPORTED_CAPABILITY`.
+
+Todos los providers pujan solo si ofrecen **todas** las capacidades que pide
+la oferta (`kit::wants`).
+
+```sh
+podman run -d --name fhs-satellite-ocr --network host --restart always \
+  --memory 1g --cpus 2 --pids-limit 256 --read-only --tmpfs /tmp:rw,size=512m \
+  -v ocr-data:/data -e IDENTITY_KEY_PATH=/data/identity.json \
+  -v /root/secrets/ipfs/ocr.token:/secrets/ipfs.token:ro \
+  -e IPFS_API_URL=http://127.0.0.1:5001 -e IPFS_API_TOKEN_FILE=/secrets/ipfs.token \
+  -e IPFS_EXPECTED_PEER=<PeerID Kubo Bastion> ... galaxia-ocr-rs
+```
 
 ## Despliegue en aarch64
 

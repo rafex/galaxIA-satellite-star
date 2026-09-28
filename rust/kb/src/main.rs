@@ -66,8 +66,7 @@ impl Kb {
 
 impl Provider for Kb {
     fn bid(&self, offer: &MissionOfferMessage) -> Option<BidTerms> {
-        let wanted = offer.required_capabilities.iter().any(|c| c == CAPABILITY);
-        (offer.mission_type == "tool_call" && wanted)
+        kit::wants(offer, "tool_call", &[CAPABILITY])
             .then(|| BidTerms::new("satellite", &[CAPABILITY], 50))
     }
 

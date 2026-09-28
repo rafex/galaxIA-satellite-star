@@ -78,11 +78,7 @@ impl Rag {
 
 impl Provider for Rag {
     fn bid(&self, offer: &MissionOfferMessage) -> Option<BidTerms> {
-        let wanted = offer
-            .required_capabilities
-            .iter()
-            .any(|c| CAPABILITIES.contains(&c.as_str()));
-        (offer.mission_type == "tool_call" && wanted)
+        kit::wants(offer, "tool_call", &CAPABILITIES)
             .then(|| BidTerms::new("satellite", &CAPABILITIES, 100))
     }
 

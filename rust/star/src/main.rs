@@ -28,8 +28,7 @@ struct Star {
 
 impl Provider for Star {
     fn bid(&self, offer: &MissionOfferMessage) -> Option<BidTerms> {
-        let wants_chat = offer.required_capabilities.iter().any(|c| c == "chat");
-        if offer.mission_type != "chat" || !wants_chat {
+        if !kit::wants(offer, "chat", &["chat"]) {
             return None;
         }
         let mut terms = BidTerms::new("star", &["chat"], 200);
