@@ -1,6 +1,8 @@
-//! Satellite KB en Rust (`examples/kb-provider`): carga los `.txt` de
+//! Satellite KB en Rust (`examples/kb-provider`): carga los `.md` y `.txt` de
 //! `KB_CONTENT_DIR` al arrancar y responde `kb_query`. El corpus es el mismo
 //! para todas las conversaciones (SPEC-KB-0001).
+
+mod corpus;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -8,16 +10,13 @@ use std::sync::Arc;
 use galaxia_fhs::p2p::provider::{BidTerms, Provider, Reply, Request};
 use galaxia_fhs::p2p::wire;
 use galaxia_fhs::protocol::fhs::{MissionOfferMessage, ProviderType, ToolDefinition};
-use galaxia_provider_kit::overlap::{self, Chunk};
 use galaxia_provider_kit::{self as kit, tools, NodeEnv};
 use serde_json::{json, Value};
 
 const CAPABILITY: &str = "knowledge.query";
-const CHUNK_WORDS: usize = 200;
-const CHUNK_OVERLAP: usize = 20;
 
 struct Kb {
-    chunks: Vec<Chunk>,
+    chunks: Vec<corpus::Section>,
 }
 
 impl Kb {
@@ -28,7 +27,7 @@ impl Kb {
                 entries
                     .filter_map(Result::ok)
                     .map(|e| e.path())
-                    .filter(|p| p.extension().is_some_and(|ext| ext == "txt"))
+                    .filter(|p| p.extension().is_some_and(|ext| ext == "txt" || ext == "md"))
                     .collect()
             })
             .unwrap_or_default();
@@ -40,9 +39,8 @@ impl Kb {
                 continue;
             };
             let name = path.file_name().unwrap_or_default().to_string_lossy();
-            for piece in overlap::chunk_text(&text, CHUNK_WORDS, CHUNK_OVERLAP) {
-                chunks.push(Chunk::new(piece, &name));
-            }
+            let markdown = path.extension().is_some_and(|ext| ext == "md");
+            chunks.extend(corpus::sections(&name, &text, markdown));
         }
         Self { chunks }
     }
@@ -50,13 +48,13 @@ impl Kb {
     /// `citation.documentTitle` es el archivo de origen (SPEC-KB-0003).
     fn query(&self, query: &str, top_k: usize) -> Value {
         Value::Array(
-            overlap::rank(&self.chunks, query, top_k)
+            corpus::rank(&self.chunks, query, top_k)
                 .into_iter()
                 .map(|(chunk, score)| {
                     json!({
                         "text": chunk.text,
                         "score": score,
-                        "citation": { "documentTitle": chunk.source },
+                        "citation": { "documentTitle": chunk.citation },
                     })
                 })
                 .collect(),
@@ -161,7 +159,7 @@ mod tests {
             "Artículo 1. Todas las personas gozarán de los derechos humanos.",
         )
         .unwrap();
-        std::fs::write(dir.join("notas.md"), "no se carga").unwrap();
+        std::fs::write(dir.join("notas.bin"), "no se carga").unwrap();
         let kb = Kb::load(&dir);
         assert_eq!(kb.chunks.len(), 2);
         let result = kb.query("derecho a la educación", 1);
@@ -181,5 +179,25 @@ mod tests {
         assert!(kb.bid(&offer("tool_call", CAPABILITY)).is_some());
         assert!(kb.bid(&offer("tool_call", "document.ocr")).is_none());
         assert!(kb.bid(&offer("chat", CAPABILITY)).is_none());
+    }
+
+    /// Humo con un corpus real: `KB_TEST_DIR=<carpeta> cargo test -p galaxia-kb -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "necesita KB_TEST_DIR"]
+    fn real_corpus_smoke() {
+        let dir = std::env::var("KB_TEST_DIR").expect("KB_TEST_DIR");
+        let kb = Kb::load(Path::new(&dir));
+        println!("{} secciones", kb.chunks.len());
+        let questions = std::env::var("KB_TEST_QUESTIONS").unwrap_or_default();
+        for q in questions.split('|').filter(|q| !q.is_empty()) {
+            println!("\n¿{q}?");
+            for hit in kb.query(q, 3).as_array().unwrap() {
+                println!(
+                    "  {:.2}  {}",
+                    hit["score"].as_f64().unwrap(),
+                    hit["citation"]["documentTitle"]
+                );
+            }
+        }
     }
 }
