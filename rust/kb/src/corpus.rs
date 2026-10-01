@@ -8,12 +8,16 @@
 
 use std::collections::{HashMap, HashSet};
 
-const WINDOW_WORDS: usize = 200;
-const WINDOW_OVERLAP: usize = 20;
+// Secciones cortas: en este hardware el prompt se lee a ~25 tok/s, cada palabra de
+// más en la respuesta de la KB se paga en segundos de espera.
+const WINDOW_WORDS: usize = 120;
+const WINDOW_OVERLAP: usize = 15;
 /// Una sección más larga que esto se parte en ventanas (con su título).
-const MAX_SECTION_WORDS: usize = 260;
+const MAX_SECTION_WORDS: usize = 140;
 /// Secciones con menos palabras que esto (solo un título, una línea) no aportan.
 const MIN_SECTION_WORDS: usize = 6;
+/// Fracción del mejor puntaje por debajo de la cual un fragmento se descarta.
+const RELATIVE_CUTOFF: f64 = 0.6;
 
 const STOPWORDS: &[&str] = &[
     "el", "la", "los", "las", "un", "una", "unos", "unas", "de", "del", "al", "a", "en", "y", "o",
@@ -213,6 +217,10 @@ pub fn rank<'a>(sections: &'a [Section], query: &str, top_k: usize) -> Vec<(&'a 
         })
         .collect();
     scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+    // Solo lo que puntúa cerca del mejor: un fragmento flojo alarga el prompt
+    // sin ayudar a responder.
+    let best = scored.first().map_or(0.0, |(_, s)| *s);
+    scored.retain(|(_, s)| *s >= best * RELATIVE_CUTOFF);
     scored.truncate(top_k);
     scored
 }
