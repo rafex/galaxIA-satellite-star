@@ -1,0 +1,1 @@
+Usa el MCP de SpecNative. Llama health_check(), entrevista al desarrollador y completa PRODUCT.md, STACK.md, ARCHITECTURE.md, CONVENTIONS.md y COMMANDS.md mediante refine_document() o update_section(). Termina indicando cómo iniciar la primera iniciativa.

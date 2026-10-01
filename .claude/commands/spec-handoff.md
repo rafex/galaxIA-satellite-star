@@ -1,0 +1,1 @@
+Usa el MCP de SpecNative. Llama status() y resume(), recopila iniciativa, tarea, intención, siguiente paso y decisiones no registradas. Guarda checkpoint(); para cada decisión persistente usa log_decision(); confirma leyendo read_context('session').

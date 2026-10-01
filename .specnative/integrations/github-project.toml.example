@@ -1,0 +1,14 @@
+# Copy to github-project.toml. Do not commit tokens or secrets in this file.
+
+[github_project]
+# GitHub ProjectV2 node ID, not the project number.
+project_id = "PVT_kwDOExample"
+owner = "your-organization-or-user"
+status_field = "Status"
+
+[status_map]
+ready = "Todo"
+in_progress = "In Progress"
+blocked = "Blocked"
+waiting = "Todo"
+done = "Done"

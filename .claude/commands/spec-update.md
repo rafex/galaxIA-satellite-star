@@ -1,0 +1,1 @@
+Usa el MCP de SpecNative. Llama health_check() y suggest_next(), muestra los vacíos y actualiza únicamente el artefacto canónico que el desarrollador confirme mediante refine_document() o update_section(). Vuelve a ejecutar health_check().
