@@ -14,6 +14,9 @@ use galaxia_provider_kit::{self as kit, tools, NodeEnv};
 use serde_json::{json, Value};
 
 const CAPABILITY: &str = "knowledge.query";
+/// Máximo de fragmentos por consulta: cada uno se paga como prompt en el Star
+/// (~25 tok/s en el hardware del laboratorio).
+const MAX_FRAGMENTS: usize = 2;
 
 struct Kb {
     chunks: Vec<corpus::Section>,
@@ -80,7 +83,10 @@ impl Provider for Kb {
                         return Err(tools::unknown_tool(&name));
                     }
                     let query = tools::arg_str(&args, "query", "");
-                    Ok(self.query(&query, tools::arg_count(&args, &["topK"], 3)))
+                    Ok(self.query(
+                        &query,
+                        tools::arg_count(&args, &["topK"], 3).min(MAX_FRAGMENTS),
+                    ))
                 })
                 .await
             }
